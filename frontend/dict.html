@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据字典 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let dict = null;
+
+async function load() {
+  const r = await API.get("/api/dict");
+  dict = r.dict;
+  const cat = document.getElementById("f-cat").value;
+  const entries = cat ? dict.entries.filter(e => e.category === cat) : dict.entries;
+  const tbody = document.getElementById("dict-list");
+  tbody.innerHTML = entries.map(e => `
+    <tr data-id="${UI.esc(e.id)}">
+      <td>${UI.esc(e.category)}</td>
+      <td class="mono">${UI.esc(e.key)}</td>
+      <td>${UI.esc(e.value)}</td>
+      <td>${UI.esc(e.remark || "")}</td>
+      <td>${e.enabled ? '<span class="badge success">启用</span>' : '<span class="badge muted">停用</span>'}</td>
+      <td class="text-right">
+        <button class="btn sm" onclick="editEntry('${UI.esc(e.id)}')">编辑</button>
+        <button class="btn sm danger" onclick="delEntry('${UI.esc(e.id)}')">删除</button>
+      </td>
+    </tr>`).join("");
+  // 分类下拉
+  const sel = document.getElementById("f-cat");
+  sel.innerHTML = '<option value="">全部分类</option>' +
+    dict.categories.map(c => `<option ${c === cat ? "selected" : ""}>${UI.esc(c)}</option>`).join("");
+}
+
+function newEntry() {
+  UI.modal("新增字典条目", `
+    <div class="field"><label>分类</label><input id="ne-cat" list="cat-list"></div>
+    <datalist id="cat-list">${dict.categories.map(c => `<option>${UI.esc(c)}</option>`).join("")}</datalist>
+    <div class="field"><label>键（Key）</label><input id="ne-key"></div>
+    <div class="field"><label>值（Value）</label><input id="ne-value"></div>
+    <div class="field"><label>备注</label><input id="ne-remark"></div>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">取消</button>
+     <button class="btn primary" onclick="createEntry()">新增</button>`);
+}
+async function createEntry() {
+  await API.post("/api/dict/entry", {
+    category: document.getElementById("ne-cat").value,
+    key: document.getElementById("ne-key").value,
+    value: document.getElementById("ne-value").value,
+    remark: document.getElementById("ne-remark").value,
+  });
+  UI.toast("已新增", "ok");
+  document.querySelector("#modal-mask").classList.remove("show");
+  load();
+}
+
+function editEntry(id) {
+  const e = dict.entries.find(x => x.id === id);
+  UI.modal("编辑字典条目", `
+    <div class="field"><label>分类</label><input id="ee-cat" value="${UI.esc(e.category)}"></div>
+    <div class="field"><label>键（Key）</label><input id="ee-key" value="${UI.esc(e.key)}"></div>
+    <div class="field"><label>值（Value）</label><input id="ee-value" value="${UI.esc(e.value)}"></div>
+    <div class="field"><label>备注</label><input id="ee-remark" value="${UI.esc(e.remark || "")}"></div>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">取消</button>
+     <button class="btn primary" onclick="saveEntry('${id}')">保存</button>`);
+}
+async function saveEntry(id) {
+  await API.put("/api/dict/entry/" + id, {
+    category: document.getElementById("ee-cat").value,
+    key: document.getElementById("ee-key").value,
+    value: document.getElementById("ee-value").value,
+    remark: document.getElementById("ee-remark").value,
+  });
+  UI.toast("已保存", "ok");
+  document.querySelector("#modal-mask").classList.remove("show");
+  load();
+}
+
+async function delEntry(id) {
+  if (!confirm("确认删除该条目？")) return;
+  await API.del("/api/dict/entry/" + id);
+  UI.toast("已删除", "ok");
+  load();
+}
+
+function newCategory() {
+  const name = prompt("新增分类名称：");
+  if (!name) return;
+  API.post("/api/dict/category", { name }).then(() => { UI.toast("已新增分类", "ok"); load(); });
+}
+
+boot("数据字典", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>📚 数据字典</h3>
+        <div class="flex">
+          <button class="btn sm" onclick="newCategory()">＋ 新增分类</button>
+          <button class="btn sm primary" onclick="newEntry()">＋ 新增条目</button>
+        </div>
+      </div>
+      <div class="sub">统一维护事件类型、风险等级、动作类型、渠道等枚举值，供规则配置参考</div>
+      <div class="flex mb">
+        <div class="field" style="margin:0;width:200px"><select id="f-cat" onchange="load()"></select></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>分类</th><th>键</th><th>值</th><th>备注</th><th>状态</th><th></th></tr></thead>
+          <tbody id="dict-list"></tbody>
+        </table>
+      </div>
+    </div>`;
+  load();
+});
+</script>
+</body>
+</html>

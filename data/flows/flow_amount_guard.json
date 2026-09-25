@@ -1,0 +1,112 @@
+{
+  "id": "flow_amount_guard",
+  "name": "大额转账守卫",
+  "description": "示例决策流：金额超限拒绝，高风险国家复核，否则放行",
+  "version": 1,
+  "enabled": true,
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "label": "开始",
+      "x": 60,
+      "y": 180
+    },
+    {
+      "id": "c1",
+      "type": "condition",
+      "label": "金额 > 100000",
+      "data": {
+        "field": "amount",
+        "op": ">",
+        "value": 100000
+      },
+      "x": 220,
+      "y": 180
+    },
+    {
+      "id": "a_reject",
+      "type": "action",
+      "label": "拒绝",
+      "data": {
+        "action": "reject",
+        "risk_score": 90,
+        "reason": "金额超限"
+      },
+      "x": 420,
+      "y": 90
+    },
+    {
+      "id": "c2",
+      "type": "condition",
+      "label": "高风险国家",
+      "data": {
+        "field": "country",
+        "op": "in",
+        "value": [
+          "RU",
+          "BR",
+          "NG"
+        ]
+      },
+      "x": 420,
+      "y": 240
+    },
+    {
+      "id": "a_review",
+      "type": "action",
+      "label": "人工复核",
+      "data": {
+        "action": "review",
+        "risk_score": 60,
+        "reason": "高风险地区"
+      },
+      "x": 620,
+      "y": 200
+    },
+    {
+      "id": "a_pass",
+      "type": "action",
+      "label": "放行",
+      "data": {
+        "action": "pass",
+        "risk_score": 0,
+        "reason": "正常交易"
+      },
+      "x": 620,
+      "y": 320
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "start",
+      "to": "c1"
+    },
+    {
+      "id": "e2",
+      "from": "c1",
+      "to": "a_reject",
+      "label": "true"
+    },
+    {
+      "id": "e3",
+      "from": "c1",
+      "to": "c2",
+      "label": "false"
+    },
+    {
+      "id": "e4",
+      "from": "c2",
+      "to": "a_review",
+      "label": "true"
+    },
+    {
+      "id": "e5",
+      "from": "c2",
+      "to": "a_pass",
+      "label": "false"
+    }
+  ],
+  "updated_at": 1790311647
+}

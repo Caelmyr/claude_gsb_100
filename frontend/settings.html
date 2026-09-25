@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>系统设置 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let settings = null;
+
+async function load() {
+  const r = await API.get("/api/settings");
+  settings = r.settings;
+  const e = settings.engine;
+  document.getElementById("site_name").value = settings.site_name;
+  document.getElementById("mode").value = e.mode;
+  document.getElementById("dedup_window").value = e.dedup_window_sec;
+  document.getElementById("max_alert_keep").value = e.max_alert_keep;
+  document.getElementById("event_ttl").value = e.event_ttl_sec;
+  document.getElementById("w_max_keys").value = e.window_max_keys;
+  document.getElementById("w_max_ev_key").value = e.window_max_events_per_key;
+  document.getElementById("w_max_total").value = e.window_max_total_events;
+}
+
+async function save() {
+  const patch = {
+    site_name: document.getElementById("site_name").value.trim(),
+    engine: {
+      mode: document.getElementById("mode").value,
+      dedup_window_sec: parseInt(document.getElementById("dedup_window").value) || 300,
+      max_alert_keep: parseInt(document.getElementById("max_alert_keep").value) || 5000,
+      event_ttl_sec: parseInt(document.getElementById("event_ttl").value) || 3600,
+      window_max_keys: parseInt(document.getElementById("w_max_keys").value) || 200000,
+      window_max_events_per_key: parseInt(document.getElementById("w_max_ev_key").value) || 20000,
+      window_max_total_events: parseInt(document.getElementById("w_max_total").value) || 2000000,
+    },
+  };
+  await API.put("/api/settings", patch);
+  UI.toast("设置已保存（匹配模式切换即时生效，其余参数重启后生效）", "ok");
+  load();
+}
+
+boot("系统设置", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="card">
+      <h3>⚙️ 系统设置</h3>
+      <div class="sub">匹配模式切换即时生效（原子重建网络）；窗口/去重等容量参数重启后生效</div>
+      <div class="grid cols-2">
+        <div class="field"><label>站点名称</label><input id="site_name"></div>
+        <div class="field"><label>规则匹配算法</label>
+          <select id="mode">
+            <option value="rete">Rete 判别网络（alpha 共享 + 哈希索引）</option>
+            <option value="decision_tree">决策树</option>
+          </select>
+        </div>
+        <div class="field"><label>告警去重窗口（秒）</label><input id="dedup_window" type="number"></div>
+        <div class="field"><label>内存最大保留告警数</label><input id="max_alert_keep" type="number"></div>
+        <div class="field"><label>事件保留时长（秒）</label><input id="event_ttl" type="number"></div>
+        <div class="field"><label>滑动窗口最大键数</label><input id="w_max_keys" type="number"></div>
+        <div class="field"><label>单键最大事件数</label><input id="w_max_ev_key" type="number"></div>
+        <div class="field"><label>窗口最大事件总数</label><input id="w_max_total" type="number"></div>
+      </div>
+      <button class="btn primary" onclick="save()">保存设置</button>
+    </div>
+    <div class="card">
+      <h3>📖 关于本项目</h3>
+      <div class="sub">实时风控规则引擎与决策流系统 · 技术要点</div>
+      <table>
+        <tr><td>高性能规则匹配</td><td>Rete 风格 alpha 判别网络：类型哈希路由 + 条件节点共享 + 决策树可选</td></tr>
+        <tr><td>滑动窗口精确聚合</td><td>按时间有序双端队列 + 惰性淘汰，均摊 O(1) 精确计数，三层内存预算（键数/单键/总量）</td></tr>
+        <tr><td>规则热更新</td><td>不可变快照 + 单引用原子替换，匹配线程读一次快照，绝不出现半成品网络</td></tr>
+        <tr><td>版本回滚</td><td>每次保存追加版本历史，回滚以更高版本号重新发布</td></tr>
+        <tr><td>告警去重</td><td>规则+主体指纹哈希索引，时间窗内累加计数，避免告警风暴</td></tr>
+        <tr><td>JSON 并发安全</td><td>进程内 RLock + 跨进程 flock + 临时文件原子替换（os.replace）</td></tr>
+      </table>
+    </div>`;
+  load();
+});
+</script>
+</body>
+</html>

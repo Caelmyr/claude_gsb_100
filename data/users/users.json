@@ -1,0 +1,37 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "nickname": "系统管理员",
+      "password": "d050ce11ff1492801829f66b4ddd294caa1cd8af495c9db36491e03bfe01d2a7",
+      "salt": "170876efc67b444ca108414e31be8824",
+      "role": "admin",
+      "enabled": true,
+      "created_at": 1790311647,
+      "last_login": 1790323522,
+      "login_count": 16
+    },
+    {
+      "username": "alice",
+      "nickname": "风控分析师",
+      "password": "f5a003fead670ef4ab44cfaf03bcb570674b3337d1b0473ea6cf3eb9024015f1",
+      "salt": "1901d3d057c44c0396c85adf5056adaa",
+      "role": "analyst",
+      "enabled": true,
+      "created_at": 1790311647,
+      "last_login": null,
+      "login_count": 0
+    },
+    {
+      "username": "bob",
+      "nickname": "只读用户",
+      "password": "29c2d864d6c098e1a26e6b5ff99cda95b5ad5e4bb5bea6145b6c78d117cba62e",
+      "salt": "fd42b2db7af2411cbfec2e8624c41dbd",
+      "role": "viewer",
+      "enabled": true,
+      "created_at": 1790311647,
+      "last_login": 1790320242,
+      "login_count": 3
+    }
+  ]
+}

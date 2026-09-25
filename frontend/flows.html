@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>决策流设计 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let flow = { id: null, name: "未命名决策流", version: 1, enabled: true, nodes: [], edges: [] };
+let selectedNode = null;
+let seq = 0;
+let connecting = null;   // {from, x, y}
+let tempLine = null;
+
+const NODE_W = 150, NODE_H = 56;
+
+const DEFAULT_DATA = {
+  start: { label: "开始" },
+  condition: { label: "条件", data: { field: "amount", op: ">", value: 1000 } },
+  action: { label: "动作", data: { action: "alert", risk_score: 50, reason: "" } },
+  branch: { label: "分支" },
+};
+
+function nid() { seq += 1; return "n" + seq; }
+function eid() { seq += 1; return "e" + seq; }
+
+function addNode(type, x, y) {
+  const node = { id: nid(), type, label: DEFAULT_DATA[type].label, x, y };
+  if (DEFAULT_DATA[type].data) node.data = JSON.parse(JSON.stringify(DEFAULT_DATA[type].data));
+  flow.nodes.push(node);
+  render();
+  select(node.id);
+}
+
+function nodeEl(id) { return document.querySelector(`.flow-node[data-id="${id}"]`); }
+function findNode(id) { return flow.nodes.find(n => n.id === id); }
+
+function port(node, side) {
+  return {
+    x: node.x + (side === "out" ? NODE_W : 0),
+    y: node.y + NODE_H / 2,
+  };
+}
+
+function bezier(p1, p2) {
+  const dx = Math.max(40, Math.abs(p2.x - p1.x) / 2);
+  return `M ${p1.x} ${p1.y} C ${p1.x + dx} ${p1.y}, ${p2.x - dx} ${p2.y}, ${p2.x} ${p2.y}`;
+}
+
+function render() {
+  const canvas = document.getElementById("canvas");
+  canvas.querySelectorAll(".flow-node").forEach(n => n.remove());
+  // 节点
+  flow.nodes.forEach(n => {
+    const el = document.createElement("div");
+    el.className = "flow-node " + n.type + (selectedNode === n.id ? " selected" : "");
+    el.dataset.id = n.id;
+    el.style.left = n.x + "px";
+    el.style.top = n.y + "px";
+    el.innerHTML = `<div class="fn-type">${n.type}</div>
+      <div class="fn-label">${UI.esc(n.label)}</div>
+      <span class="fn-port in" title="输入"></span>
+      <span class="fn-port out" title="输出"></span>`;
+    el.addEventListener("mousedown", (e) => dragNode(e, n.id));
+    el.addEventListener("click", (e) => { if (!e._dragged) select(n.id); });
+    canvas.appendChild(el);
+  });
+  drawEdges();
+}
+
+function drawEdges() {
+  const svg = document.getElementById("edges");
+  let markup = `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+    markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker></defs>`;
+  flow.edges.forEach(e => {
+    const f = findNode(e.from), t = findNode(e.to);
+    if (!f || !t) return;
+    const p1 = port(f, "out"), p2 = port(t, "in");
+    const dy = p2.y - p1.y;
+    markup += `<path d="${bezier(p1, p2)}" />`;
+    if (e.label) {
+      const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2 - 6;
+      markup += `<text x="${mx}" y="${my}" fill="#b45309" font-size="11" text-anchor="middle" style="pointer-events:none">${UI.esc(e.label)}</text>`;
+    }
+    markup += `<circle cx="${(p1.x+p2.x)/2}" cy="${(p1.y+p2.y)/2}" r="5" fill="#94a3b8" style="pointer-events:all;cursor:pointer" data-edge="${e.id}"/>`;
+  });
+  if (connecting) {
+    const f = findNode(connecting.from);
+    const p1 = port(f, "out");
+    markup += `<path d="${bezier(p1, {x: connecting.x, y: connecting.y})}" stroke-dasharray="5 4"/>`;
+  }
+  svg.innerHTML = markup;
+  svg.querySelectorAll("circle[data-edge]").forEach(c => {
+    c.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (confirm("删除这条连线？")) {
+        flow.edges = flow.edges.filter(x => x.id !== c.dataset.edge);
+        render();
+      }
+    });
+  });
+}
+
+function select(id) {
+  selectedNode = id;
+  flow.nodes.forEach(n => {
+    const el = nodeEl(n.id);
+    if (el) el.classList.toggle("selected", n.id === id);
+  });
+  renderProps();
+}
+
+function dragNode(e, id) {
+  const node = findNode(id);
+  const canvas = document.getElementById("canvas");
+  const rect = canvas.getBoundingClientRect();
+  const startX = e.clientX, startY = e.clientY;
+  const origX = node.x, origY = node.y;
+  function move(ev) {
+    ev._dragged = true;
+    node.x = Math.max(0, Math.min(canvas.clientWidth - NODE_W, origX + ev.clientX - startX));
+    node.y = Math.max(0, Math.min(canvas.clientHeight - NODE_H, origY + ev.clientY - startY));
+    const el = nodeEl(id);
+    el.style.left = node.x + "px"; el.style.top = node.y + "px";
+    drawEdges();
+  }
+  function up() { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); }
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
+
+function renderProps() {
+  const box = document.getElementById("props");
+  const node = findNode(selectedNode);
+  if (!node) { box.innerHTML = '<div class="muted">点击节点查看/编辑属性</div>'; return; }
+  let fields = `<div class="field"><label>标签</label><input id="p-label" value="${UI.esc(node.label)}"></div>`;
+  if (node.type === "condition") {
+    fields += `
+      <div class="row">
+        <div class="field"><label>字段</label><input id="p-field" value="${UI.esc(node.data.field)}"></div>
+        <div class="field"><label>操作符</label>
+          <select id="p-op">${["==","!=",">",">=","<","<=","in","not_in","contains","regex","exists"].map(o => `<option ${node.data.op===o?"selected":""}>${o}</option>`).join("")}</select>
+        </div>
+      </div>
+      <div class="field"><label>值（JSON，数组用 ["a","b"]）</label><input id="p-value" value='${UI.esc(JSON.stringify(node.data.value))}'></div>`;
+  } else if (node.type === "action") {
+    fields += `
+      <div class="row">
+        <div class="field"><label>动作</label>
+          <select id="p-action">${["reject","review","alert","pass"].map(a => `<option ${node.data.action===a?"selected":""}>${a}</option>`).join("")}</select>
+        </div>
+        <div class="field"><label>风险分</label><input id="p-score" type="number" value="${node.data.risk_score}"></div>
+      </div>
+      <div class="field"><label>原因</label><input id="p-reason" value="${UI.esc(node.data.reason || "")}"></div>`;
+  }
+  fields += `<div class="flex"><button class="btn sm primary" onclick="applyProps()">应用</button>
+    <button class="btn sm danger" onclick="delNode()">删除节点</button></div>`;
+  box.innerHTML = fields;
+}
+
+function applyProps() {
+  const node = findNode(selectedNode);
+  if (!node) return;
+  node.label = document.getElementById("p-label").value || node.label;
+  if (node.type === "condition") {
+    node.data.field = document.getElementById("p-field").value;
+    node.data.op = document.getElementById("p-op").value;
+    try { node.data.value = JSON.parse(document.getElementById("p-value").value); }
+    catch (e) { node.data.value = document.getElementById("p-value").value; }
+  } else if (node.type === "action") {
+    node.data.action = document.getElementById("p-action").value;
+    node.data.risk_score = parseInt(document.getElementById("p-score").value) || 0;
+    node.data.reason = document.getElementById("p-reason").value;
+  }
+  render(); renderProps();
+  UI.toast("节点属性已更新", "ok");
+}
+
+function delNode() {
+  if (!selectedNode) return;
+  flow.nodes = flow.nodes.filter(n => n.id !== selectedNode);
+  flow.edges = flow.edges.filter(e => e.from !== selectedNode && e.to !== selectedNode);
+  selectedNode = null;
+  render(); renderProps();
+}
+
+// 连线：从 out 端口拖到 in 端口
+function wireEvents() {
+  const canvas = document.getElementById("canvas");
+  canvas.addEventListener("mousedown", (e) => {
+    const port = e.target.closest(".fn-port.out");
+    if (!port) return;
+    const fromId = port.parentElement.dataset.id;
+    connecting = { from: fromId, x: e.clientX, y: e.clientY };
+    drawEdges();
+    function move(ev) { connecting.x = ev.clientX; connecting.y = ev.clientY; drawEdges(); }
+    function up(ev) {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      const target = document.elementFromPoint(ev.clientX, ev.clientY);
+      const inPort = target && target.closest ? target.closest(".fn-port.in") : null;
+      if (inPort && connecting) {
+        const toId = inPort.parentElement.dataset.id;
+        if (toId !== connecting.from) {
+          let label = "";
+          if (findNode(connecting.from).type === "condition") {
+            label = prompt("该边为条件节点的分支，输入 true 或 false：", "true") || "true";
+          }
+          flow.edges.push({ id: eid(), from: connecting.from, to: toId, label });
+        }
+      }
+      connecting = null;
+      drawEdges();
+    }
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+}
+
+// 画布拖放添加节点
+function paletteEvents() {
+  document.querySelectorAll(".pitem").forEach(item => {
+    item.addEventListener("mousedown", (e) => {
+      const type = item.dataset.type;
+      const canvas = document.getElementById("canvas");
+      const rect = canvas.getBoundingClientRect();
+      function move(ev) { /* 占位，等待 drop */ }
+      function up(ev) {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        const x = Math.max(0, ev.clientX - rect.left - NODE_W / 2);
+        const y = Math.max(0, ev.clientY - rect.top - NODE_H / 2);
+        if (ev.clientX >= rect.left && ev.clientX <= rect.right &&
+            ev.clientY >= rect.top && ev.clientY <= rect.bottom) {
+          addNode(type, x, y);
+        }
+      }
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
+  });
+}
+
+async function loadFlows() {
+  const r = await API.get("/api/flows");
+  const sel = document.getElementById("flow-select");
+  sel.innerHTML = '<option value="">— 新建流程 —</option>' +
+    r.flows.map(f => `<option value="${UI.esc(f.id)}">${UI.esc(f.name)}</option>`).join("");
+}
+
+async function openFlow(id) {
+  const r = await API.get("/api/flows/" + id);
+  flow = r.flow;
+  document.getElementById("flow-name").value = flow.name;
+  selectedNode = null;
+  render(); renderProps();
+}
+
+async function saveFlow() {
+  flow.name = document.getElementById("flow-name").value || flow.name;
+  if (!flow.id) flow.id = "flow_" + Date.now();
+  if (flow.nodes.filter(n => n.type === "start").length === 0) {
+    UI.toast("决策流必须包含一个 start 节点", "err"); return;
+  }
+  try {
+    const r = await API.post("/api/flows", { flow });
+    flow = r.flow;
+    UI.toast("决策流已保存", "ok");
+    loadFlows();
+  } catch (e) { UI.toast(e.message, "err"); }
+}
+
+async function delFlow() {
+  if (!flow.id) return;
+  if (!confirm("确认删除决策流？")) return;
+  await API.del("/api/flows/" + flow.id);
+  UI.toast("已删除", "ok");
+  flow = { id: null, name: "未命名决策流", version: 1, enabled: true, nodes: [], edges: [] };
+  selectedNode = null;
+  render(); renderProps(); loadFlows();
+}
+
+async function testFlow() {
+  const m = UI.modal("测试决策流", `
+    <div class="field"><label>测试事件 JSON</label>
+      <textarea id="test-event" rows="8" class="mono">${UI.esc(UI.jsonPretty({ type: "transfer", amount: 200000, country: "CN", ip: "1.2.3.4" }))}</textarea></div>
+    <div id="test-result"></div>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">关闭</button>
+     <button class="btn primary" onclick="runFlowTest()">执行</button>`);
+}
+async function runFlowTest() {
+  let event;
+  try { event = JSON.parse(document.getElementById("test-event").value); }
+  catch (e) { UI.toast("事件 JSON 错误：" + e.message, "err"); return; }
+  const r = await API.post("/api/sandbox/test_flow", { flow, event });
+  document.getElementById("test-result").innerHTML = r.ok
+    ? `<pre class="json-view">${UI.esc(UI.jsonPretty(r.result))}</pre>`
+    : `<div class="badge danger">${UI.esc(r.error)}</div>`;
+}
+
+boot("决策流设计", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="card">
+      <div class="flow-toolbar">
+        <div class="field" style="margin:0;width:220px"><input id="flow-name" placeholder="流程名称" value="未命名决策流"></div>
+        <select id="flow-select" style="width:220px" onchange="this.value && openFlow(this.value)"></select>
+        <button class="btn primary" onclick="saveFlow()">💾 保存流程</button>
+        <button class="btn" onclick="testFlow()">🧪 测试</button>
+        <button class="btn danger" onclick="delFlow()">删除</button>
+      </div>
+      <div class="palette">
+        <div class="pitem" data-type="start" style="border-color:#16a34a">▶ 开始</div>
+        <div class="pitem" data-type="condition" style="border-color:#d97706">❓ 条件</div>
+        <div class="pitem" data-type="action" style="border-color:#2563eb">⚡ 动作</div>
+        <div class="pitem" data-type="branch" style="border-color:#0891b2">🔀 分支</div>
+        <span class="muted" style="align-self:center;font-size:12px">拖动上方节点到画布；拖动节点移动；从节点右侧圆点拖到另一节点左侧圆点连线</span>
+      </div>
+      <div class="flow-canvas" id="canvas">
+        <svg class="flow-edges" id="edges"></svg>
+      </div>
+    </div>
+    <div class="grid cols-2">
+      <div class="card"><h3>节点属性</h3><div class="sub">点击画布中的节点编辑其属性</div><div id="props"></div></div>
+      <div class="card"><h3>说明</h3><div class="sub">决策流编译为可执行步骤，沙箱可对其进行测试</div>
+        <ul style="padding-left:18px;color:var(--text-dim);font-size:13px">
+          <li><b>start</b>：入口节点（必须存在且唯一）</li>
+          <li><b>condition</b>：条件节点，出边需标注 true / false</li>
+          <li><b>action</b>：动作节点，产生 reject/review/alert/pass</li>
+          <li><b>branch</b>：分支节点，沿所有出边展开</li>
+          <li>最终动作取最高优先级（reject &gt; review &gt; alert &gt; pass），风险分取最大</li>
+        </ul>
+      </div>
+    </div>`;
+  wireEvents();
+  paletteEvents();
+  render();
+  renderProps();
+  loadFlows();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "site_name": "实时风控规则引擎与决策流",
+  "engine": {
+    "mode": "rete",
+    "dedup_window_sec": 300,
+    "max_alert_keep": 5000,
+    "alert_ttl_hours": 72,
+    "window_granularity_sec": 1,
+    "window_max_keys": 200000,
+    "window_max_events_per_key": 20000,
+    "window_max_total_events": 2000000,
+    "event_ttl_sec": 3600
+  },
+  "alert": {
+    "levels": [
+      "低",
+      "中",
+      "高",
+      "严重"
+    ],
+    "default_level": "中"
+  },
+  "event_types": [
+    "login",
+    "register",
+    "order",
+    "payment",
+    "transfer",
+    "withdraw",
+    "sms",
+    "api"
+  ],
+  "dict_categories": [
+    "事件类型",
+    "风险等级",
+    "动作类型",
+    "渠道",
+    "设备类型",
+    "IP 段"
+  ]
+}

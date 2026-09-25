@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>告警列表 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let selected = new Set();
+let page = 1;
+const PAGE_SIZE = 20;
+
+async function load(filters) {
+  const q = new URLSearchParams({ page, page_size: PAGE_SIZE, ...filters });
+  const r = await API.get("/api/alerts?" + q.toString());
+  const tbody = document.getElementById("alert-list");
+  tbody.innerHTML = r.alerts.map(a => `
+    <tr>
+      <td><input type="checkbox" data-id="${UI.esc(a.id)}" ${selected.has(a.id) ? "checked" : ""}></td>
+      <td class="mono">${UI.esc(a.id)}</td>
+      <td>${UI.esc(a.rule_name || a.rule_id)}</td>
+      <td>${UI.levelBadge(a.level)}</td>
+      <td class="num">${a.risk_score}</td>
+      <td>${UI.actionBadge(a.action)}</td>
+      <td class="mono">${UI.esc(JSON.stringify(a.subject || {}))}</td>
+      <td class="num"><b>${a.count}</b></td>
+      <td>${UI.statusBadge(a.status)}</td>
+      <td class="mono">${UI.fmtTime(a.last_seen)}</td>
+      <td class="text-right"><button class="btn sm" onclick="detail('${UI.esc(a.id)}')">详情</button></td>
+    </tr>`).join("");
+  document.getElementById("total").textContent = r.total;
+  document.getElementById("page-info").textContent = `第 ${r.page} 页 / 共 ${Math.ceil(r.total / PAGE_SIZE)} 页`;
+  document.getElementById("prev").disabled = page <= 1;
+  document.getElementById("next").disabled = page * PAGE_SIZE >= r.total;
+  // 恢复勾选
+  tbody.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.onchange = () => { cb.checked ? selected.add(cb.dataset.id) : selected.delete(cb.dataset.id); };
+  });
+}
+
+function applyFilters() {
+  page = 1;
+  load({
+    status: document.getElementById("f-status").value,
+    level: document.getElementById("f-level").value,
+    keyword: document.getElementById("f-keyword").value.trim(),
+  });
+}
+
+async function mark(status) {
+  if (selected.size === 0) { UI.toast("请先勾选告警", "warn"); return; }
+  const r = await API.post("/api/alerts/mark", { ids: [...selected], status });
+  UI.toast(`已更新 ${r.updated} 条告警状态`, "ok");
+  selected.clear();
+  applyFilters();
+}
+
+function exportAlerts(fmt) {
+  const ids = selected.size ? [...selected].join(",") : "";
+  window.open("/api/alerts/export?fmt=" + fmt + (ids ? "&ids=" + ids : ""), "_blank");
+}
+
+function detail(id) {
+  UI.modal("告警详情", `<div id="detail-body">加载中…</div>`);
+  // 从当前列表数据中取
+  API.get("/api/alerts?keyword=" + id).then(r => {
+    const a = r.alerts.find(x => x.id === id);
+    document.getElementById("detail-body").innerHTML = a
+      ? `<pre class="json-view">${UI.esc(UI.jsonPretty(a))}</pre>`
+      : "未找到";
+  });
+}
+
+async function loadStats() {
+  const r = await API.get("/api/alerts/stats");
+  const s = r.stats;
+  document.getElementById("alert-stats").innerHTML = `
+    <div class="grid cols-4">
+      <div class="stat"><div class="label">告警总数</div><div class="value warning">${s.total}</div></div>
+      <div class="stat"><div class="label">去重前事件数</div><div class="value">${s.total_events}</div></div>
+      <div class="stat"><div class="label">去重比</div><div class="value primary">${s.dedup_ratio}</div></div>
+      <div class="stat"><div class="label">去重索引</div><div class="value">${s.index_size}</div></div>
+    </div>`;
+}
+
+boot("告警列表", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div id="alert-stats"></div>
+    <div class="card">
+      <div class="card-head"><h3>🔔 告警列表</h3>
+        <div class="flex">
+          <button class="btn sm warning" onclick="mark('acked')">标记已确认</button>
+          <button class="btn sm success" onclick="mark('resolved')">标记已解决</button>
+          <button class="btn sm" onclick="exportAlerts('csv')">导出 CSV</button>
+          <button class="btn sm" onclick="exportAlerts('json')">导出 JSON</button>
+        </div>
+      </div>
+      <div class="sub">短时间窗内同一规则同一主体的连续命中聚合为一条告警（count 累加）</div>
+      <div class="flex mb" style="flex-wrap:wrap">
+        <div class="field" style="margin:0;width:120px"><select id="f-status">
+          <option value="">全部状态</option><option value="new">新</option>
+          <option value="acked">已确认</option><option value="resolved">已解决</option>
+        </select></div>
+        <div class="field" style="margin:0;width:120px"><select id="f-level">
+          <option value="">全部等级</option><option value="低">低</option><option value="中">中</option>
+          <option value="高">高</option><option value="严重">严重</option>
+        </select></div>
+        <div class="field" style="margin:0;width:200px"><input id="f-keyword" placeholder="关键词（IP/规则/主体）"></div>
+        <button class="btn sm primary" onclick="applyFilters()">查询</button>
+        <span class="muted" style="margin-left:auto">共 <b id="total">0</b> 条</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>ID</th><th>规则</th><th>等级</th><th>风险分</th><th>动作</th><th>主体</th><th>聚合次数</th><th>状态</th><th>最近命中</th><th></th></tr></thead>
+          <tbody id="alert-list"></tbody>
+        </table>
+      </div>
+      <div class="flex mt" style="justify-content:flex-end">
+        <button class="btn sm" id="prev" onclick="page--;applyFilters()">上一页</button>
+        <span class="muted" id="page-info"></span>
+        <button class="btn sm" id="next" onclick="page++;applyFilters()">下一页</button>
+      </div>
+    </div>`;
+  loadStats();
+  applyFilters();
+});
+</script>
+</body>
+</html>

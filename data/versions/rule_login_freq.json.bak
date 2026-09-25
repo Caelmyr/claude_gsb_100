@@ -1,0 +1,127 @@
+{
+  "history": [
+    {
+      "version": 1,
+      "rule": {
+        "id": "rule_login_freq",
+        "name": "登录高频检测",
+        "description": "同一 IP 60 秒内登录次数超过 5 次视为撞库/暴力破解",
+        "enabled": true,
+        "priority": 100,
+        "conditions": [
+          {
+            "field": "type",
+            "op": "==",
+            "value": "login"
+          },
+          {
+            "agg": {
+              "window_sec": 60,
+              "key_field": "ip",
+              "op": ">=",
+              "threshold": 5,
+              "agg_type": "count"
+            }
+          }
+        ],
+        "action": {
+          "type": "reject",
+          "risk_score": 90,
+          "reason": "登录频率过高",
+          "level": "高"
+        },
+        "tags": [
+          "高频",
+          "登录"
+        ],
+        "version": 1,
+        "updated_at": 1790311647
+      },
+      "ts": 1790311647,
+      "author": "system",
+      "comment": "初始规则"
+    },
+    {
+      "version": 2,
+      "rule": {
+        "id": "rule_login_freq",
+        "name": "登录高频检测",
+        "description": "初始阈值 8 次",
+        "enabled": true,
+        "priority": 100,
+        "conditions": [
+          {
+            "field": "type",
+            "op": "==",
+            "value": "login"
+          },
+          {
+            "agg": {
+              "window_sec": 60,
+              "key_field": "ip",
+              "op": ">=",
+              "threshold": 8,
+              "agg_type": "count"
+            }
+          }
+        ],
+        "action": {
+          "type": "reject",
+          "risk_score": 90,
+          "reason": "登录频率过高",
+          "level": "高"
+        },
+        "tags": [
+          "高频",
+          "登录"
+        ],
+        "version": 2,
+        "updated_at": 1790311647
+      },
+      "ts": 1790311647,
+      "author": "system",
+      "comment": "上调阈值至 8"
+    },
+    {
+      "version": 3,
+      "rule": {
+        "id": "rule_login_freq",
+        "name": "登录高频检测",
+        "description": "窗口放宽到 120 秒、阈值 6",
+        "enabled": true,
+        "priority": 100,
+        "conditions": [
+          {
+            "field": "type",
+            "op": "==",
+            "value": "login"
+          },
+          {
+            "agg": {
+              "window_sec": 120,
+              "key_field": "ip",
+              "op": ">=",
+              "threshold": 6,
+              "agg_type": "count"
+            }
+          }
+        ],
+        "action": {
+          "type": "reject",
+          "risk_score": 90,
+          "reason": "登录频率过高",
+          "level": "高"
+        },
+        "tags": [
+          "高频",
+          "登录"
+        ],
+        "version": 3,
+        "updated_at": 1790311647
+      },
+      "ts": 1790311647,
+      "author": "system",
+      "comment": "放宽窗口"
+    }
+  ]
+}

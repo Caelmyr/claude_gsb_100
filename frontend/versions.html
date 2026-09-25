@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>规则版本管理 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let ruleId = null;
+let history = [];
+
+// 简单 LCS 行级 diff
+function diffLines(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) { out.push(["same", a[i]]); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(["del", a[i]]); i++; }
+    else { out.push(["add", b[j]]); j++; }
+  }
+  while (i < m) out.push(["del", a[i++]]);
+  while (j < n) out.push(["add", b[j++]]);
+  return out;
+}
+
+function renderDiff(oldText, newText) {
+  const a = oldText.split("\n"), b = newText.split("\n");
+  const d = diffLines(a, b);
+  return d.map(([kind, line]) =>
+    `<div class="${kind === "add" ? "diff-add" : kind === "del" ? "diff-del" : "diff-same"}">${kind === "add" ? "+ " : kind === "del" ? "- " : "  "}${UI.esc(line)}</div>`
+  ).join("");
+}
+
+async function loadRules() {
+  const r = await API.get("/api/rules");
+  const sel = document.getElementById("rule-select");
+  sel.innerHTML = '<option value="">选择规则…</option>' +
+    r.rules.map(ru => `<option value="${UI.esc(ru.id)}">${UI.esc(ru.name)} (${UI.esc(ru.id)})</option>`).join("");
+}
+
+async function loadHistory() {
+  if (!ruleId) return;
+  const r = await API.get(`/api/rules/${ruleId}/versions`);
+  history = r.history;
+  const tbody = document.getElementById("version-list");
+  tbody.innerHTML = history.map((h, idx) => `
+    <tr data-v="${h.version}">
+      <td class="num">v${h.version}${idx === 0 ? ' <span class="badge primary">当前</span>' : ""}</td>
+      <td>${UI.esc(h.author)}</td>
+      <td>${UI.esc(h.comment)}</td>
+      <td class="mono">${UI.fmtTime(h.ts)}</td>
+      <td>${h.rule && h.rule.enabled ? '<span class="badge success">启用</span>' : '<span class="badge muted">停用</span>'}</td>
+      <td class="text-right">
+        <button class="btn sm" onclick="showVersion(${idx})">查看</button>
+        <button class="btn sm warning" onclick="rollback(${h.version})">回滚</button>
+      </td>
+    </tr>`).join("");
+}
+
+function showVersion(idx) {
+  const h = history[idx];
+  document.getElementById("version-json").textContent = UI.jsonPretty(h.rule);
+  document.getElementById("version-title").textContent = `版本 v${h.version} · ${h.comment || ""}`;
+}
+
+function showDiffToCurrent(idx) {
+  const h = history[idx];
+  const cur = history[0]; // 当前版本在最前
+  const m = UI.modal("版本对比（v" + h.version + " → 当前 v" + cur.version + "）",
+    `<pre class="json-view" style="font-family:mono;white-space:pre-wrap">${renderDiff(UI.jsonPretty(h.rule), UI.jsonPretty(cur.rule))}</pre>`);
+}
+
+async function rollback(version) {
+  if (!confirm(`确认回滚到版本 v${version}？将以更高版本号重新发布。`)) return;
+  const r = await API.post(`/api/rules/${ruleId}/rollback`, { version });
+  UI.toast("已回滚（原子替换热更新）", "ok");
+  loadHistory();
+}
+
+boot("规则版本管理", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>🕘 规则版本历史</h3>
+        <select id="rule-select" style="width:280px" onchange="ruleId=this.value;loadHistory()"></select>
+      </div>
+      <div class="sub">每次保存追加一条版本快照；回滚以更高版本号重新发布（旁路构建 + 原子替换，不中断匹配）</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>版本</th><th>操作者</th><th>说明</th><th>时间</th><th>状态</th><th></th></tr></thead>
+          <tbody id="version-list"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 id="version-title">版本内容</h3>
+        <button class="btn sm" onclick="showDiffToCurrent(0)">对比当前</button>
+      </div>
+      <pre class="json-view" id="version-json">（请选择版本查看）</pre>
+    </div>`;
+  loadRules();
+});
+</script>
+</body>
+</html>

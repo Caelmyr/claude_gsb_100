@@ -1,0 +1,27 @@
+{
+  "rule": {
+    "id": "rule_amount_spike",
+    "name": "金额突增检测",
+    "description": "交易金额出现突增标记时告警",
+    "enabled": true,
+    "priority": 40,
+    "conditions": [
+      {
+        "field": "risk_hint",
+        "op": "==",
+        "value": "amount_spike"
+      }
+    ],
+    "action": {
+      "type": "review",
+      "risk_score": 58,
+      "reason": "金额突增",
+      "level": "中"
+    },
+    "tags": [
+      "金额"
+    ],
+    "version": 1,
+    "updated_at": 1790311647
+  }
+}

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 实时风控规则引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+<div id="app"></div>
+<script src="assets/js/api.js"></script>
+<script>
+(async function () {
+  const user = await App.init();
+  if (!user) {
+    document.body.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card">
+          <h1>🛡️ 实时风控规则引擎</h1>
+          <div class="sub">规则引擎 · 决策流 · 滑动窗口聚合 · 告警去重</div>
+          <div class="field"><label>用户名</label><input id="u" placeholder="admin"></div>
+          <div class="field"><label>密码</label><input id="p" type="password" placeholder="admin123"></div>
+          <button class="btn primary w100" id="go" style="justify-content:center">登 录</button>
+          <div class="muted mt" style="text-align:center;font-size:12px">
+            默认账号：admin / admin123 · alice / 123456 · bob / 123456
+          </div>
+        </div>
+      </div>`;
+    async function doLogin() {
+      const username = document.getElementById("u").value.trim();
+      const password = document.getElementById("p").value;
+      try {
+        await API.post("/api/login", { username, password });
+        location.reload();
+      } catch (e) { UI.toast(e.message, "err"); }
+    }
+    document.getElementById("go").onclick = doLogin;
+    document.getElementById("p").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+    return;
+  }
+
+  // 已登录：渲染总览
+  App.renderShell("总览");
+  const page = document.getElementById("page");
+  let stats = null;
+  try { stats = (await API.get("/api/stats")).stats; } catch (e) {}
+
+  const c = (stats && stats.counters) || {};
+  const alerts = (stats && stats.alerts) || {};
+  const engine = (stats && stats.engine) || {};
+
+  page.innerHTML = `
+    <div class="grid cols-4">
+      <div class="stat"><div class="label">累计事件数</div><div class="value">${c.total || 0}</div><div class="hint">已过引擎</div></div>
+      <div class="stat"><div class="label">命中率</div><div class="value ${(c.hit_rate || 0) > 0.3 ? "danger" : "primary"}">${((c.hit_rate || 0) * 100).toFixed(1)}%</div><div class="hint">命中 ${c.matched || 0} 条</div></div>
+      <div class="stat"><div class="label">拒绝率</div><div class="value danger">${((c.reject_rate || 0) * 100).toFixed(1)}%</div><div class="hint">拒绝 ${c.rejected || 0} 条</div></div>
+      <div class="stat"><div class="label">告警总数</div><div class="value warning">${alerts.total || 0}</div><div class="hint">去重比 ${alerts.dedup_ratio || 0}</div></div>
+    </div>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="card-head"><h3>⚙️ 引擎状态</h3><span class="badge primary">${UI.esc(engine.mode || "rete")}</span></div>
+        <table>
+          <tr><td>当前规则数</td><td class="num">${engine.rule_count || 0}</td></tr>
+          <tr><td>匹配网络节点</td><td class="num">${engine.node_count || 0}</td></tr>
+          <tr><td>类型分区</td><td class="num">${engine.type_partitions ? engine.type_partitions.length : 0}</td></tr>
+          <tr><td>最大聚合窗口</td><td class="num">${engine.max_window_sec || 0}s</td></tr>
+          <tr><td>平均匹配耗时</td><td class="num">${c.avg_elapsed_us || 0} μs</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>🪟 滑动窗口 / 告警</h3></div>
+        <table>
+          <tr><td>窗口聚合键数</td><td class="num">${(stats && stats.window.keys) || 0}</td></tr>
+          <tr><td>窗口内事件</td><td class="num">${(stats && stats.window.total_events) || 0}</td></tr>
+          <tr><td>告警去重索引</td><td class="num">${alerts.index_size || 0}</td></tr>
+          <tr><td>告警事件总数</td><td class="num">${alerts.total_events || 0}</td></tr>
+          <tr><td>去重比</td><td class="num">${alerts.dedup_ratio || 0}</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>🚀 快捷入口</h3></div>
+      <div class="flex" style="flex-wrap:wrap">
+        <a class="btn primary" href="/rules.html">规则配置</a>
+        <a class="btn" href="/flows.html">决策流设计</a>
+        <a class="btn" href="/events.html">实时事件流</a>
+        <a class="btn" href="/alerts.html">告警列表</a>
+        <a class="btn" href="/stats.html">统计报表</a>
+        <a class="btn" href="/sandbox.html">测试沙箱</a>
+      </div>
+    </div>
+  `;
+})();
+</script>
+</body>
+</html>

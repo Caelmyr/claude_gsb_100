@@ -1,0 +1,189 @@
+{
+  "categories": [
+    "事件类型",
+    "风险等级",
+    "动作类型",
+    "渠道",
+    "设备类型",
+    "IP 段"
+  ],
+  "entries": [
+    {
+      "id": "dict_ev_login",
+      "category": "事件类型",
+      "key": "login",
+      "value": "登录",
+      "remark": "用户登录事件",
+      "enabled": true
+    },
+    {
+      "id": "dict_ev_register",
+      "category": "事件类型",
+      "key": "register",
+      "value": "注册",
+      "remark": "用户注册事件",
+      "enabled": true
+    },
+    {
+      "id": "dict_ev_transfer",
+      "category": "事件类型",
+      "key": "transfer",
+      "value": "转账",
+      "remark": "转账交易",
+      "enabled": true
+    },
+    {
+      "id": "dict_ev_payment",
+      "category": "事件类型",
+      "key": "payment",
+      "value": "支付",
+      "remark": "支付交易",
+      "enabled": true
+    },
+    {
+      "id": "dict_ev_withdraw",
+      "category": "事件类型",
+      "key": "withdraw",
+      "value": "提现",
+      "remark": "提现交易",
+      "enabled": true
+    },
+    {
+      "id": "dict_ev_sms",
+      "category": "事件类型",
+      "key": "sms",
+      "value": "短信",
+      "remark": "短信下发",
+      "enabled": true
+    },
+    {
+      "id": "dict_ev_api",
+      "category": "事件类型",
+      "key": "api",
+      "value": "接口调用",
+      "remark": "API 调用",
+      "enabled": true
+    },
+    {
+      "id": "dict_lv_low",
+      "category": "风险等级",
+      "key": "低",
+      "value": "低",
+      "remark": "低风险",
+      "enabled": true
+    },
+    {
+      "id": "dict_lv_mid",
+      "category": "风险等级",
+      "key": "中",
+      "value": "中",
+      "remark": "中风险",
+      "enabled": true
+    },
+    {
+      "id": "dict_lv_high",
+      "category": "风险等级",
+      "key": "高",
+      "value": "高",
+      "remark": "高风险",
+      "enabled": true
+    },
+    {
+      "id": "dict_lv_crit",
+      "category": "风险等级",
+      "key": "严重",
+      "value": "严重",
+      "remark": "严重风险",
+      "enabled": true
+    },
+    {
+      "id": "dict_act_reject",
+      "category": "动作类型",
+      "key": "reject",
+      "value": "拒绝",
+      "remark": "直接拒绝",
+      "enabled": true
+    },
+    {
+      "id": "dict_act_review",
+      "category": "动作类型",
+      "key": "review",
+      "value": "人工复核",
+      "remark": "转人工复核",
+      "enabled": true
+    },
+    {
+      "id": "dict_act_alert",
+      "category": "动作类型",
+      "key": "alert",
+      "value": "告警",
+      "remark": "仅告警",
+      "enabled": true
+    },
+    {
+      "id": "dict_act_pass",
+      "category": "动作类型",
+      "key": "pass",
+      "value": "放行",
+      "remark": "直接放行",
+      "enabled": true
+    },
+    {
+      "id": "dict_ch_app",
+      "category": "渠道",
+      "key": "app",
+      "value": "APP",
+      "remark": "移动应用",
+      "enabled": true
+    },
+    {
+      "id": "dict_ch_h5",
+      "category": "渠道",
+      "key": "h5",
+      "value": "H5",
+      "remark": "移动网页",
+      "enabled": true
+    },
+    {
+      "id": "dict_ch_api",
+      "category": "渠道",
+      "key": "openapi",
+      "value": "开放平台",
+      "remark": "开放 API",
+      "enabled": true
+    },
+    {
+      "id": "dict_dev_ios",
+      "category": "设备类型",
+      "key": "ios",
+      "value": "iOS",
+      "remark": "iOS 设备",
+      "enabled": true
+    },
+    {
+      "id": "dict_dev_android",
+      "category": "设备类型",
+      "key": "android",
+      "value": "Android",
+      "remark": "Android 设备",
+      "enabled": true
+    },
+    {
+      "id": "dict_dev_web",
+      "category": "设备类型",
+      "key": "web",
+      "value": "Web",
+      "remark": "浏览器",
+      "enabled": true
+    },
+    {
+      "id": "dict_1790320063865_c283725274",
+      "category": "risk_level",
+      "key": "smoke_test",
+      "value": "9",
+      "remark": "",
+      "enabled": true,
+      "updated_at": 1790320063
+    }
+  ]
+}

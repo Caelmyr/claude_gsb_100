@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用户管理 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const ROLE_LABEL = { admin: "管理员", analyst: "分析师", viewer: "只读" };
+
+async function load() {
+  const r = await API.get("/api/users");
+  const tbody = document.getElementById("user-list");
+  tbody.innerHTML = r.users.map(u => `
+    <tr data-u="${UI.esc(u.username)}">
+      <td class="mono">${UI.esc(u.username)}</td>
+      <td>${UI.esc(u.nickname)}</td>
+      <td>${UI.badge(u.role === "admin" ? "primary" : u.role === "analyst" ? "info" : "muted", ROLE_LABEL[u.role] || u.role)}</td>
+      <td>${u.enabled ? '<span class="badge success">启用</span>' : '<span class="badge danger">禁用</span>'}</td>
+      <td>${u.login_count || 0}</td>
+      <td class="mono">${UI.fmtTime(u.last_login)}</td>
+      <td class="text-right">
+        <button class="btn sm" onclick="editUser('${UI.esc(u.username)}')">编辑</button>
+        <button class="btn sm" onclick="resetPwd('${UI.esc(u.username)}')">改密</button>
+        <button class="btn sm danger" onclick="delUser('${UI.esc(u.username)}')">删除</button>
+      </td>
+    </tr>`).join("");
+}
+
+function newUser() {
+  UI.modal("新建用户", `
+    <div class="field"><label>用户名</label><input id="nu-u"></div>
+    <div class="field"><label>密码</label><input id="nu-p" value="123456"></div>
+    <div class="field"><label>昵称</label><input id="nu-n"></div>
+    <div class="field"><label>角色</label>
+      <select id="nu-r"><option value="viewer">只读</option><option value="analyst">分析师</option><option value="admin">管理员</option></select></div>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">取消</button>
+     <button class="btn primary" onclick="createUser()">创建</button>`);
+}
+async function createUser() {
+  const body = {
+    username: document.getElementById("nu-u").value.trim(),
+    password: document.getElementById("nu-p").value,
+    nickname: document.getElementById("nu-n").value.trim(),
+    role: document.getElementById("nu-r").value,
+  };
+  const r = await API.post("/api/users", body);
+  UI.toast(r.message, r.ok ? "ok" : "err");
+  if (r.ok) { document.querySelector("#modal-mask").classList.remove("show"); load(); }
+}
+
+function editUser(username) {
+  UI.modal("编辑用户 " + username, `
+    <div class="field"><label>昵称</label><input id="eu-n" value=""></div>
+    <div class="field"><label>角色</label>
+      <select id="eu-r"><option value="viewer">只读</option><option value="analyst">分析师</option><option value="admin">管理员</option></select></div>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:400">
+      <input type="checkbox" id="eu-en" style="width:auto" checked> 启用账号</label>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">取消</button>
+     <button class="btn primary" onclick="saveUser('${username}')">保存</button>`);
+  API.get("/api/users").then(r => {
+    const u = r.users.find(x => x.username === username);
+    if (u) {
+      document.getElementById("eu-n").value = u.nickname;
+      document.getElementById("eu-r").value = u.role;
+      document.getElementById("eu-en").checked = u.enabled;
+    }
+  });
+}
+async function saveUser(username) {
+  await API.put("/api/users/" + username, {
+    nickname: document.getElementById("eu-n").value,
+    role: document.getElementById("eu-r").value,
+    enabled: document.getElementById("eu-en").checked,
+  });
+  UI.toast("已保存", "ok");
+  document.querySelector("#modal-mask").classList.remove("show");
+  load();
+}
+
+function resetPwd(username) {
+  const pwd = prompt("为 " + username + " 设置新密码：", "123456");
+  if (!pwd) return;
+  API.post("/api/users/" + username + "/password", { password: pwd }).then(() => {
+    UI.toast("密码已重置", "ok");
+  });
+}
+
+async function delUser(username) {
+  if (username === "admin") { UI.toast("不能删除超级管理员", "err"); return; }
+  if (!confirm("确认删除用户 " + username + "？")) return;
+  await API.del("/api/users/" + username);
+  UI.toast("已删除", "ok");
+  load();
+}
+
+function changeMyPwd() {
+  UI.modal("修改我的密码", `
+    <div class="field"><label>原密码</label><input type="password" id="mp-old"></div>
+    <div class="field"><label>新密码</label><input type="password" id="mp-new"></div>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">取消</button>
+     <button class="btn primary" onclick="doChangePwd()">提交</button>`);
+}
+async function doChangePwd() {
+  try {
+    await API.post("/api/users/me/password", {
+      old_password: document.getElementById("mp-old").value,
+      new_password: document.getElementById("mp-new").value,
+    });
+    UI.toast("密码已修改", "ok");
+    document.querySelector("#modal-mask").classList.remove("show");
+  } catch (e) { UI.toast(e.message, "err"); }
+}
+
+boot("用户管理", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>👥 用户列表</h3>
+        <div class="flex">
+          <button class="btn sm" onclick="changeMyPwd()">修改我的密码</button>
+          <button class="btn sm primary" onclick="newUser()">＋ 新建用户</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>用户名</th><th>昵称</th><th>角色</th><th>状态</th><th>登录次数</th><th>最近登录</th><th></th></tr></thead>
+          <tbody id="user-list"></tbody>
+        </table>
+      </div>
+    </div>`;
+  load();
+});
+</script>
+</body>
+</html>

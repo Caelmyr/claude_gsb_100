@@ -1,0 +1,33 @@
+{
+  "rule": {
+    "id": "rule_big_transfer",
+    "name": "大额转账检测",
+    "description": "单笔转账金额超过 10 万进入人工复核",
+    "enabled": true,
+    "priority": 90,
+    "conditions": [
+      {
+        "field": "type",
+        "op": "==",
+        "value": "transfer"
+      },
+      {
+        "field": "amount",
+        "op": ">",
+        "value": 100000
+      }
+    ],
+    "action": {
+      "type": "review",
+      "risk_score": 70,
+      "reason": "大额转账需人工复核",
+      "level": "中"
+    },
+    "tags": [
+      "金额",
+      "转账"
+    ],
+    "version": 1,
+    "updated_at": 1790311647
+  }
+}

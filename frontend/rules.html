@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>规则配置 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let editor = null;
+let currentRuleId = null;
+
+const SAMPLE = {
+  id: "rule_demo", name: "示例规则", description: "规则说明",
+  enabled: true, priority: 100,
+  conditions: [
+    { field: "type", op: "==", value: "login" },
+    { agg: { window_sec: 60, key_field: "ip", op: ">=", threshold: 5, agg_type: "count" } }
+  ],
+  action: { type: "reject", risk_score: 90, reason: "登录频率过高", level: "高" },
+  tags: ["高频", "登录"]
+};
+
+async function loadRules() {
+  const r = await API.get("/api/rules");
+  const tbody = document.getElementById("rule-list");
+  tbody.innerHTML = r.rules.map((ru) => `
+    <tr class="clickable" data-id="${UI.esc(ru.id)}">
+      <td class="mono">${UI.esc(ru.id)}</td>
+      <td>${UI.esc(ru.name)}</td>
+      <td>${ru.priority}</td>
+      <td>${UI.actionBadge(ru.action.type)}</td>
+      <td>${ru.enabled ? '<span class="badge success">启用</span>' : '<span class="badge muted">停用</span>'}</td>
+      <td>v${ru.version || 1}</td>
+      <td class="text-right">
+        <button class="btn sm ghost" data-act="toggle">${ru.enabled ? "停用" : "启用"}</button>
+        <button class="btn sm" data-act="edit">编辑</button>
+        <button class="btn sm danger" data-act="del">删除</button>
+      </td>
+    </tr>`).join("");
+}
+
+async function editRule(id) {
+  const ru = (await API.get("/api/rules/" + id)).rule;
+  currentRuleId = id;
+  editor.setValue(UI.jsonPretty(ru));
+  document.getElementById("rule-name-label").textContent = "编辑：" + ru.name;
+}
+
+function newRule() {
+  currentRuleId = null;
+  editor.setValue(UI.jsonPretty(SAMPLE));
+  document.getElementById("rule-name-label").textContent = "新建规则";
+}
+
+async function validate() {
+  let rule;
+  try { rule = JSON.parse(editor.getValue()); }
+  catch (e) { UI.toast("JSON 语法错误：" + e.message, "err"); return null; }
+  const r = await API.post("/api/rules/validate", { rule });
+  if (!r.valid) { UI.toast("规则校验失败：" + r.message, "err"); }
+  else {
+    UI.toast("✔ " + r.message + "（alpha=" + r.detail.alpha_conditions + "，agg=" + r.detail.agg_conditions + "）", "ok");
+    return rule;
+  }
+  return null;
+}
+
+async function save() {
+  let rule;
+  try { rule = JSON.parse(editor.getValue()); }
+  catch (e) { UI.toast("JSON 语法错误：" + e.message, "err"); return; }
+  const v = await API.post("/api/rules/validate", { rule });
+  if (!v.valid) { UI.toast("规则校验失败：" + v.message, "err"); return; }
+  try {
+    if (currentRuleId) {
+      await API.put("/api/rules/" + currentRuleId, { rule, comment: "编辑规则" });
+    } else {
+      await API.post("/api/rules", { rule, comment: "新建规则" });
+    }
+    UI.toast("规则已保存并热更新生效", "ok");
+    loadRules();
+  } catch (e) { UI.toast(e.message, "err"); }
+}
+
+async function onListClick(e) {
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = tr.dataset.id;
+  const act = e.target.dataset.act;
+  if (act === "edit") { editRule(id); }
+  else if (act === "toggle") {
+    const ru = (await API.get("/api/rules/" + id)).rule;
+    await API.post("/api/rules/" + id + "/enable", { enabled: !ru.enabled });
+    UI.toast("已切换启用状态（热更新）", "ok");
+    loadRules();
+  } else if (act === "del") {
+    if (!confirm("确认删除规则 " + id + "？")) return;
+    await API.del("/api/rules/" + id);
+    UI.toast("已删除", "ok");
+    loadRules();
+  } else { editRule(id); }
+}
+
+boot("规则配置", async () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="grid cols-2" style="grid-template-columns: 1.1fr 1fr">
+      <div class="card">
+        <div class="card-head">
+          <h3>规则列表</h3>
+          <button class="btn primary sm" onclick="newRule()">＋ 新建规则</button>
+        </div>
+        <div class="sub">规则保存后立即热更新生效（原子替换，无需重启）</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>名称</th><th>优先级</th><th>动作</th><th>状态</th><th>版本</th><th></th></tr></thead>
+            <tbody id="rule-list"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3 id="rule-name-label">规则 JSON 编辑器</h3>
+          <div class="flex">
+            <button class="btn sm" onclick="validate()">语法校验</button>
+            <button class="btn sm primary" onclick="save()">保存</button>
+          </div>
+        </div>
+        <div class="sub">支持普通条件（field/op/value）与聚合条件（agg 滑动窗口）</div>
+        <textarea id="editor"></textarea>
+        <div class="muted mt" style="font-size:12px">
+          <b>操作符：</b>== != &gt; &gt;= &lt; &lt;= in not_in contains regex exists<br>
+          <b>聚合：</b>{"agg":{"window_sec":60,"key_field":"ip","op":">=","threshold":5,"agg_type":"count"}}，
+          agg_type ∈ count / sum / avg / max / min / distinct_count<br>
+          <b>动作：</b>reject（拒绝）/ review（复核）/ alert（告警）/ pass（放行）
+        </div>
+      </div>
+    </div>`;
+  editor = CodeMirror.fromTextArea(document.getElementById("editor"), {
+    mode: { name: "javascript", json: true }, lineNumbers: true, theme: "default",
+    indentUnit: 2, tabSize: 2, lineWrapping: true
+  });
+  editor.setValue(UI.jsonPretty(SAMPLE));
+  document.getElementById("rule-list").onclick = onListClick;
+  loadRules();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+{
+  "rule": {
+    "id": "rule_highrisk_country",
+    "name": "高风险国家交易",
+    "description": "来自高风险国家/地区的交易转人工复核",
+    "enabled": true,
+    "priority": 70,
+    "conditions": [
+      {
+        "field": "country",
+        "op": "in",
+        "value": [
+          "RU",
+          "BR",
+          "NG"
+        ]
+      },
+      {
+        "field": "type",
+        "op": "in",
+        "value": [
+          "payment",
+          "transfer",
+          "withdraw"
+        ]
+      }
+    ],
+    "action": {
+      "type": "review",
+      "risk_score": 60,
+      "reason": "高风险地区交易",
+      "level": "中"
+    },
+    "tags": [
+      "地区"
+    ],
+    "version": 1,
+    "updated_at": 1790311647
+  }
+}

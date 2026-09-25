@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>测试沙箱 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+async function dryRun() {
+  let event;
+  try { event = JSON.parse(document.getElementById("dr-event").value); }
+  catch (e) { UI.toast("事件 JSON 错误：" + e.message, "err"); return; }
+  const r = await API.post("/api/sandbox/dry_run", { event });
+  renderResult("dr-result", r);
+}
+
+async function testRule() {
+  let rule, event;
+  try { rule = JSON.parse(document.getElementById("tr-rule").value); }
+  catch (e) { UI.toast("规则 JSON 错误：" + e.message, "err"); return; }
+  try { event = JSON.parse(document.getElementById("tr-event").value); }
+  catch (e) { UI.toast("事件 JSON 错误：" + e.message, "err"); return; }
+  const r = await API.post("/api/sandbox/test_rule", { rule, event });
+  if (!r.result.ok) { UI.toast("规则编译失败：" + r.result.error, "err"); return; }
+  const res = r.result;
+  let html = `<div class="flex mb">
+      <span class="badge ${res.matched ? "danger" : "success"}">${res.matched ? "规则命中" : "未命中"}</span>
+      <span>${UI.actionBadge(res.action)} 风险分 ${res.risk_score}</span>
+      <span class="muted">alpha 匹配：${res.alpha_match ? "✔" : "✘"}</span></div>`;
+  if (res.agg_checks && res.agg_checks.length) {
+    html += `<table><thead><tr><th>聚合字段</th><th>类型</th><th>窗口</th><th>当前值</th><th>条件</th><th>阈值</th><th>结果</th></tr></thead><tbody>`;
+    res.agg_checks.forEach(a => {
+      html += `<tr><td>${UI.esc(a.key_field)}</td><td>${UI.esc(a.agg_type)}</td><td>${a.window_sec}s</td>
+        <td class="num">${a.value}</td><td>${UI.esc(a.op)}</td><td class="num">${a.threshold}</td>
+        <td>${a.ok ? '<span class="badge success">通过</span>' : '<span class="badge danger">不通过</span>'}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  document.getElementById("tr-result").innerHTML = html;
+}
+
+function renderResult(id, r) {
+  const res = r.result;
+  let html = `<div class="flex mb">
+    <span class="badge ${res.matched ? "danger" : "success"}">${res.matched ? "命中" : "未命中"}</span>
+    <span>${UI.actionBadge(res.action)} 风险分 ${res.risk_score}</span>
+    <span class="muted">耗时 ${res.elapsed_us} μs · 引擎版本 ${res.engine_version}</span></div>`;
+  if (res.fired_rules && res.fired_rules.length) {
+    html += `<table><thead><tr><th>规则</th><th>原因</th><th>动作</th><th>风险分</th><th>聚合结果</th></tr></thead><tbody>`;
+    res.fired_rules.forEach(f => {
+      const aggs = (f.agg_values || []).map(a => `${a.key_field} ${a.agg_type}=${a.value} ${a.op} ${a.threshold}`).join("<br>");
+      html += `<tr><td>${UI.esc(f.rule_name)}</td><td>${UI.esc(f.reason)}</td><td>${UI.actionBadge(f.action)}</td>
+        <td class="num">${f.risk_score}</td><td class="mono" style="font-size:11px">${aggs || "-"}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  document.getElementById(id).innerHTML = html;
+}
+
+async function seedWindow() {
+  const body = {
+    key: document.getElementById("sw-key").value.trim(),
+    value: document.getElementById("sw-value").value.trim() || null,
+    count: parseInt(document.getElementById("sw-count").value) || 1,
+  };
+  if (!body.key) { UI.toast("请输入聚合键", "err"); return; }
+  const r = await API.post("/api/sandbox/seed_window", body);
+  UI.toast(`已向窗口注入 ${r.count} 条，当前窗口内计数 ${r.current}`, "ok");
+}
+
+async function testFlow() {
+  const r = await API.get("/api/flows");
+  const flowId = document.getElementById("tf-flow").value;
+  let event;
+  try { event = JSON.parse(document.getElementById("tf-event").value); }
+  catch (e) { UI.toast("事件 JSON 错误：" + e.message, "err"); return; }
+  if (!flowId) { UI.toast("请选择决策流", "warn"); return; }
+  const res = await API.post("/api/sandbox/test_flow", { flow_id: flowId, event });
+  if (!res.ok) { UI.toast(res.error, "err"); return; }
+  document.getElementById("tf-result").innerHTML = `<pre class="json-view">${UI.esc(UI.jsonPretty(res.result))}</pre>`;
+}
+
+boot("测试沙箱", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>🔬 整机 Dry-Run</h3>
+        <div class="sub">对事件做只读匹配（不落盘、不告警、不污染窗口），展示命中的规则与聚合结果</div>
+        <textarea id="dr-event" rows="6" class="mono">${UI.esc(UI.jsonPretty({ type: "transfer", ip: "1.2.3.4", user_id: "u1", amount: 150000, country: "CN" }))}</textarea>
+        <button class="btn primary mt" onclick="dryRun()">执行 Dry-Run</button>
+        <div id="dr-result" class="mt"></div>
+      </div>
+
+      <div class="card">
+        <h3>📏 单规则测试</h3>
+        <div class="sub">编译单条规则并对事件做 alpha + beta（聚合）校验</div>
+        <label>规则 JSON</label>
+        <textarea id="tr-rule" rows="7" class="mono">${UI.esc(UI.jsonPretty({
+          id: "rule_test", name: "测试规则", enabled: true, priority: 100,
+          conditions: [{ field: "type", op: "==", value: "login" },
+            { agg: { window_sec: 60, key_field: "ip", op: ">=", threshold: 5, agg_type: "count" } }],
+          action: { type: "reject", risk_score: 90, reason: "测试" } }))}</textarea>
+        <label class="mt">事件 JSON</label>
+        <textarea id="tr-event" rows="4" class="mono">${UI.esc(UI.jsonPretty({ type: "login", ip: "1.2.3.4" }))}</textarea>
+        <button class="btn primary mt" onclick="testRule()">测试规则</button>
+        <div id="tr-result" class="mt"></div>
+      </div>
+
+      <div class="card">
+        <h3>🪟 滑动窗口注入</h3>
+        <div class="sub">向聚合窗口注入历史事件，构造高频场景后配合单规则测试验证聚合条件</div>
+        <div class="row">
+          <div class="field"><label>聚合键（如 IP）</label><input id="sw-key" placeholder="1.2.3.4"></div>
+          <div class="field"><label>值（可选）</label><input id="sw-value" placeholder="金额"></div>
+          <div class="field"><label>条数</label><input id="sw-count" type="number" value="6"></div>
+        </div>
+        <button class="btn primary" onclick="seedWindow()">注入窗口</button>
+      </div>
+
+      <div class="card">
+        <h3>🔀 决策流测试</h3>
+        <div class="sub">选择已保存的决策流，对事件执行并展示动作与路径</div>
+        <select id="tf-flow" style="margin-bottom:10px"></select>
+        <textarea id="tf-event" rows="5" class="mono">${UI.esc(UI.jsonPretty({ type: "transfer", amount: 200000, country: "RU", ip: "5.5.5.5" }))}</textarea>
+        <button class="btn primary mt" onclick="testFlow()">执行决策流</button>
+        <div id="tf-result" class="mt"></div>
+      </div>
+    </div>`;
+  API.get("/api/flows").then(r => {
+    document.getElementById("tf-flow").innerHTML =
+      r.flows.map(f => `<option value="${UI.esc(f.id)}">${UI.esc(f.name)}</option>`).join("");
+  });
+});
+</script>
+</body>
+</html>

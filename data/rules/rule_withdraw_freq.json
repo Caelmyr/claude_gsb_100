@@ -1,0 +1,37 @@
+{
+  "rule": {
+    "id": "rule_withdraw_freq",
+    "name": "提现频率监控",
+    "description": "同一用户 5 分钟内提现超过 3 次告警",
+    "enabled": true,
+    "priority": 75,
+    "conditions": [
+      {
+        "field": "type",
+        "op": "==",
+        "value": "withdraw"
+      },
+      {
+        "agg": {
+          "window_sec": 300,
+          "key_field": "user_id",
+          "op": ">=",
+          "threshold": 3,
+          "agg_type": "count"
+        }
+      }
+    ],
+    "action": {
+      "type": "alert",
+      "risk_score": 65,
+      "reason": "提现过于频繁",
+      "level": "中"
+    },
+    "tags": [
+      "高频",
+      "提现"
+    ],
+    "version": 1,
+    "updated_at": 1790311647
+  }
+}

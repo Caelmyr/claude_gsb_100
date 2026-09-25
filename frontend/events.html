@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实时事件流 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let ws = null;
+let paused = false;
+let maxLines = 500;
+let lineCount = 0;
+
+const TYPE_ICON = { login: "🔑", register: "📝", order: "🛒", payment: "💳", transfer: "💸", withdraw: "🏧", sms: "✉️", api: "🔌" };
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/api/ws/events`);
+  setStatus("连接中…", "warning");
+  ws.onopen = () => setStatus("已连接", "success");
+  ws.onmessage = (msg) => {
+    let data;
+    try { data = JSON.parse(msg.data); } catch (e) { return; }
+    if (data.kind === "event") appendEvent(data.event, data.decision);
+    else if (data.kind === "hello") {
+      // 连接握手，忽略
+    }
+  };
+  ws.onclose = () => { setStatus("已断开，3 秒后重连…", "danger"); setTimeout(connect, 3000); };
+  ws.onerror = () => setStatus("连接错误", "danger");
+}
+
+function setStatus(text, cls) {
+  const el = document.getElementById("ws-status");
+  el.textContent = text;
+  el.className = "badge " + cls;
+}
+
+function appendEvent(event, decision) {
+  if (paused) return;
+  const log = document.getElementById("events-log");
+  const t = new Date(event.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+  const icon = TYPE_ICON[event.type] || "⚙️";
+  const actCls = "act-" + (decision.action || "pass");
+  const actLabel = { reject: "拒绝", review: "复核", alert: "告警", pass: "放行" }[decision.action] || decision.action;
+  const risk = decision.risk_score || 0;
+  const line = document.createElement("div");
+  line.className = "ev-line";
+  line.innerHTML = `<span class="t">${t}</span>
+    <span class="tag">${icon} ${UI.esc(event.type)}</span>
+    <span style="flex:1;color:#9ca3af">${UI.esc(event.ip || "")} ${UI.esc(event.user_id || "")} ${event.amount != null ? "¥" + event.amount : ""}</span>
+    ${decision.matched ? `<span class="tag">命中${decision.fired_rules.length}条</span>` : ""}
+    <span class="${actCls}">${actLabel} ${risk ? "· " + risk : ""}</span>`;
+  log.appendChild(line);
+  lineCount++;
+  while (log.childNodes.length > maxLines) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function ingest() {
+  let event;
+  try { event = JSON.parse(document.getElementById("manual-event").value); }
+  catch (e) { UI.toast("事件 JSON 错误：" + e.message, "err"); return; }
+  const r = await API.post("/api/events/ingest", { event });
+  UI.toast("已注入：" + (r.decision.action || "pass"), "ok");
+}
+
+async function simulate() {
+  const count = parseInt(document.getElementById("sim-count").value) || 50;
+  const burst = document.getElementById("sim-burst").checked;
+  const btn = document.getElementById("sim-btn");
+  btn.disabled = true; btn.textContent = "仿真中…";
+  try {
+    const r = await API.post("/api/events/simulate", { count, burst });
+    UI.toast(`仿真完成：${r.count} 条，命中 ${r.matched}，拒绝 ${r.rejected}`, "ok");
+  } finally { btn.disabled = false; btn.textContent = "批量仿真"; }
+}
+
+boot("实时事件流", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3>⚡ 实时事件流</h3>
+        <div class="flex">
+          <span>WebSocket：</span><span id="ws-status" class="badge muted">未连接</span>
+          <button class="btn sm" onclick="paused=!paused;this.textContent=paused?'已暂停':'暂停滚动'">暂停滚动</button>
+          <button class="btn sm" onclick="document.getElementById('events-log').innerHTML=''">清空</button>
+        </div>
+      </div>
+      <div class="sub">事件经 WebSocket 实时推送，展示类型、来源与风控决策（拒绝 / 复核 / 告警 / 放行）</div>
+      <div class="events-log" id="events-log"></div>
+    </div>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>手动注入事件</h3>
+        <div class="sub">注入单条事件走完整风控链路（滑动窗口 + Rete 匹配 + 告警去重）</div>
+        <textarea id="manual-event" rows="7" class="mono">${UI.esc(UI.jsonPretty({ type: "transfer", ip: "10.0.0.1", user_id: "u999", amount: 120000, country: "CN", channel: "app" }))}</textarea>
+        <button class="btn primary mt" onclick="ingest()">注入事件</button>
+      </div>
+      <div class="card">
+        <h3>批量仿真</h3>
+        <div class="sub">生成随机事件流，可构造「同 IP 高频」聚合场景触发滑动窗口规则</div>
+        <div class="row">
+          <div class="field"><label>事件数量</label><input id="sim-count" type="number" value="100"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-bottom:12px">
+          <input type="checkbox" id="sim-burst" style="width:auto" checked> 构造同 IP 高频场景（触发高频聚合规则）
+        </label>
+        <button class="btn primary" id="sim-btn" onclick="simulate()">批量仿真</button>
+      </div>
+    </div>`;
+  connect();
+});
+</script>
+</body>
+</html>

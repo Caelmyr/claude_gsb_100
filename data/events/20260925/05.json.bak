@@ -1,0 +1,321 @@
+{
+  "events": [
+    {
+      "type": "transfer",
+      "amount": 500000,
+      "ip": "9.9.9.9",
+      "user_id": "u1",
+      "country": "RU",
+      "ts": 1790315001.1927524,
+      "id": "ev_1790315001192"
+    },
+    {
+      "id": "ev_1790315001206_3614",
+      "type": "transfer",
+      "ts": 1790315001.2063122,
+      "ip": "121.71.47.215",
+      "user_id": "u3433",
+      "device_id": "android",
+      "channel": "pc",
+      "amount": 32050.75,
+      "country": "RU",
+      "risk_hint": "amount_spike"
+    },
+    {
+      "id": "ev_1790315001208_8844",
+      "type": "register",
+      "ts": 1790315001.2088892,
+      "ip": "190.177.89.119",
+      "user_id": "u15258",
+      "device_id": "android",
+      "channel": "app",
+      "amount": null,
+      "country": "US",
+      "risk_hint": "ip_anomaly"
+    },
+    {
+      "id": "ev_1790315001208_4326",
+      "type": "sms",
+      "ts": 1790315001.208982,
+      "ip": "60.255.216.231",
+      "user_id": "u74642",
+      "device_id": "h5",
+      "channel": "app",
+      "amount": 147523.74,
+      "country": "SG",
+      "risk_hint": "amount_spike"
+    },
+    {
+      "id": "ev_1790315001210_7762",
+      "type": "withdraw",
+      "ts": 1790315001.2101953,
+      "ip": "27.30.223.127",
+      "user_id": "u84794",
+      "device_id": "ios",
+      "channel": "app",
+      "amount": 194930.13,
+      "country": "SG",
+      "risk_hint": "ip_anomaly"
+    },
+    {
+      "id": "ev_1790315001210_8355",
+      "type": "sms",
+      "ts": 1790315001.2102664,
+      "ip": "131.236.117.162",
+      "user_id": "u68854",
+      "device_id": "web",
+      "channel": "pc",
+      "amount": 49852.22,
+      "country": "BR",
+      "risk_hint": "amount_spike"
+    },
+    {
+      "id": "ev_1790315001211_1878",
+      "type": "transfer",
+      "ts": 1790315001.2118044,
+      "ip": "159.163.241.121",
+      "user_id": "u14196",
+      "device_id": "android",
+      "channel": "openapi",
+      "amount": 54209.55,
+      "country": "SG",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001211_9959",
+      "type": "sms",
+      "ts": 1790315001.2118607,
+      "ip": "58.121.118.139",
+      "user_id": "u56152",
+      "device_id": "android",
+      "channel": "h5",
+      "amount": 96111.78,
+      "country": "CN",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001211_2420",
+      "type": "order",
+      "ts": 1790315001.2119086,
+      "ip": "171.249.79.7",
+      "user_id": "u53237",
+      "device_id": "ios",
+      "channel": "openapi",
+      "amount": 2679.89,
+      "country": "SG",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001211_3228",
+      "type": "transfer",
+      "ts": 1790315001.2119427,
+      "ip": "79.251.128.59",
+      "user_id": "u39732",
+      "device_id": "android",
+      "channel": "app",
+      "amount": 108517.43,
+      "country": "BR",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001214_8109",
+      "type": "order",
+      "ts": 1790315001.2146835,
+      "ip": "156.245.192.23",
+      "user_id": "u27524",
+      "device_id": "android",
+      "channel": "h5",
+      "amount": 171873.09,
+      "country": "SG",
+      "risk_hint": "amount_spike"
+    },
+    {
+      "id": "ev_1790315001216_5330",
+      "type": "register",
+      "ts": 1790315001.2162256,
+      "ip": "210.227.224.26",
+      "user_id": "u43789",
+      "device_id": "ios",
+      "channel": "h5",
+      "amount": null,
+      "country": "US",
+      "risk_hint": "amount_spike"
+    },
+    {
+      "id": "ev_1790315001218_1451",
+      "type": "withdraw",
+      "ts": 1790315001.218109,
+      "ip": "13.219.135.189",
+      "user_id": "u63534",
+      "device_id": "web",
+      "channel": "pc",
+      "amount": 14419.99,
+      "country": "BR",
+      "risk_hint": "amount_spike"
+    },
+    {
+      "id": "ev_1790315001221_7194",
+      "type": "withdraw",
+      "ts": 1790315001.2210808,
+      "ip": "104.52.245.161",
+      "user_id": "u62383",
+      "device_id": "web",
+      "channel": "pc",
+      "amount": 18475.72,
+      "country": "RU",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001222_9640",
+      "type": "payment",
+      "ts": 1790315001.2226732,
+      "ip": "44.217.117.246",
+      "user_id": "u99127",
+      "device_id": "ios",
+      "channel": "pc",
+      "amount": 174631.06,
+      "country": "US",
+      "risk_hint": "ip_anomaly"
+    },
+    {
+      "id": "ev_1790315001222_5078",
+      "type": "withdraw",
+      "ts": 1790315001.2227445,
+      "ip": "53.130.235.67",
+      "user_id": "u28538",
+      "device_id": "android",
+      "channel": "h5",
+      "amount": 41525.67,
+      "country": "US",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001222_7129",
+      "type": "sms",
+      "ts": 1790315001.2227929,
+      "ip": "215.188.107.71",
+      "user_id": "u56047",
+      "device_id": "android",
+      "channel": "app",
+      "amount": 17652.79,
+      "country": "BR",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001222_4629",
+      "type": "register",
+      "ts": 1790315001.2228372,
+      "ip": "13.25.4.15",
+      "user_id": "u27115",
+      "device_id": "web",
+      "channel": "app",
+      "amount": null,
+      "country": "BR",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001222_4560",
+      "type": "api",
+      "ts": 1790315001.2228777,
+      "ip": "91.90.130.144",
+      "user_id": "u89539",
+      "device_id": "h5",
+      "channel": "pc",
+      "amount": 31153.93,
+      "country": "BR",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001222_5073",
+      "type": "register",
+      "ts": 1790315001.2229204,
+      "ip": "29.195.232.210",
+      "user_id": "u56631",
+      "device_id": "android",
+      "channel": "h5",
+      "amount": null,
+      "country": "BR",
+      "risk_hint": null
+    },
+    {
+      "id": "ev_1790315001222_8884",
+      "type": "api",
+      "ts": 1790315001.2229588,
+      "ip": "13.18.57.35",
+      "user_id": "u28120",
+      "device_id": "h5",
+      "channel": "openapi",
+      "amount": 161881.06,
+      "country": "SG",
+      "risk_hint": null
+    },
+    {
+      "type": "withdraw",
+      "amount": 100,
+      "ip": "11.0.0.1",
+      "user_id": "u1000",
+      "country": "CN",
+      "ts": 1790315046.3197818,
+      "id": "ev_1790315046319"
+    },
+    {
+      "type": "withdraw",
+      "amount": 100,
+      "ip": "11.0.0.2",
+      "user_id": "u1000",
+      "country": "CN",
+      "ts": 1790315046.3536131,
+      "id": "ev_1790315046353"
+    },
+    {
+      "type": "withdraw",
+      "amount": 100,
+      "ip": "11.0.0.3",
+      "user_id": "u1000",
+      "country": "CN",
+      "ts": 1790315046.3859375,
+      "id": "ev_1790315046385"
+    },
+    {
+      "type": "withdraw",
+      "amount": 100,
+      "ip": "11.0.0.4",
+      "user_id": "u1000",
+      "country": "CN",
+      "ts": 1790315046.4186194,
+      "id": "ev_1790315046418"
+    },
+    {
+      "type": "withdraw",
+      "user_id": "u777",
+      "ip": "10.1.1.1",
+      "amount": 90000,
+      "ts": 1790315955.199306,
+      "id": "ev_1790315955199"
+    },
+    {
+      "type": "withdraw",
+      "user_id": "u777",
+      "ip": "10.1.1.2",
+      "amount": 90000,
+      "ts": 1790315955.2089884,
+      "id": "ev_1790315955208"
+    },
+    {
+      "type": "withdraw",
+      "user_id": "u777",
+      "ip": "10.1.1.3",
+      "amount": 90000,
+      "ts": 1790315955.219807,
+      "id": "ev_1790315955219"
+    },
+    {
+      "type": "withdraw",
+      "user_id": "u777",
+      "ip": "10.1.1.4",
+      "amount": 90000,
+      "ts": 1790315955.2322128,
+      "id": "ev_1790315955232"
+    }
+  ]
+}

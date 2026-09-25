@@ -1,0 +1,32 @@
+{
+  "rule": {
+    "id": "rule_new_device",
+    "name": "新设备登录预警",
+    "description": "新设备登录产生告警",
+    "enabled": true,
+    "priority": 60,
+    "conditions": [
+      {
+        "field": "type",
+        "op": "==",
+        "value": "login"
+      },
+      {
+        "field": "risk_hint",
+        "op": "==",
+        "value": "new_device"
+      }
+    ],
+    "action": {
+      "type": "alert",
+      "risk_score": 55,
+      "reason": "新设备登录",
+      "level": "低"
+    },
+    "tags": [
+      "设备"
+    ],
+    "version": 1,
+    "updated_at": 1790311647
+  }
+}

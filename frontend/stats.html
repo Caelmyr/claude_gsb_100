@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>统计报表 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+let charts = {};
+let autoRefresh = true;
+
+function initChart(id) {
+  if (!charts[id]) charts[id] = echarts.init(document.getElementById(id));
+  return charts[id];
+}
+
+function resizeAll() { Object.values(charts).forEach(c => c.resize()); }
+window.addEventListener("resize", resizeAll);
+
+async function refresh() {
+  const r = await API.get("/api/stats");
+  const s = r.stats;
+  const c = s.counters;
+
+  // 顶部磁贴
+  document.getElementById("tiles").innerHTML = `
+    <div class="grid cols-4">
+      <div class="stat"><div class="label">总事件</div><div class="value">${c.total}</div><div class="hint">命中 ${c.matched}</div></div>
+      <div class="stat"><div class="label">命中率</div><div class="value primary">${(c.hit_rate * 100).toFixed(1)}%</div><div class="hint">命中事件 / 总事件</div></div>
+      <div class="stat"><div class="label">拒绝率</div><div class="value danger">${(c.reject_rate * 100).toFixed(1)}%</div><div class="hint">拒绝 ${c.rejected}</div></div>
+      <div class="stat"><div class="label">平均匹配耗时</div><div class="value success">${c.avg_elapsed_us} μs</div><div class="hint">单事件匹配延迟</div></div>
+    </div>`;
+
+  // 时间序列
+  const series = s.minute_series || {};
+  const keys = Object.keys(series).map(Number).sort((a, b) => a - b);
+  const labels = keys.map(k => new Date(k * 1000).toLocaleTimeString("zh-CN", { hour12: false }));
+  const hitRate = keys.map(k => {
+    const m = series[k]; return m.total ? +(m.matched / m.total * 100).toFixed(1) : 0;
+  });
+  const rejectRate = keys.map(k => {
+    const m = series[k]; return m.total ? +(m.rejected / m.total * 100).toFixed(1) : 0;
+  });
+  const totals = keys.map(k => series[k].total);
+
+  initChart("chart-rate").setOption({
+    title: { text: "命中率 / 拒绝率趋势", left: "center", textStyle: { fontSize: 14 } },
+    tooltip: { trigger: "axis" },
+    legend: { bottom: 0, data: ["命中率 %", "拒绝率 %", "事件数"] },
+    grid: { left: 40, right: 40, top: 40, bottom: 40 },
+    xAxis: { type: "category", data: labels, boundaryGap: true },
+    yAxis: [
+      { type: "value", name: "百分比 %", max: 100 },
+      { type: "value", name: "事件数" },
+    ],
+    series: [
+      { name: "命中率 %", type: "line", smooth: true, data: hitRate, areaStyle: { opacity: .12 } },
+      { name: "拒绝率 %", type: "line", smooth: true, data: rejectRate, lineStyle: { color: "#dc2626" }, itemStyle: { color: "#dc2626" }, areaStyle: { opacity: .08 } },
+      { name: "事件数", type: "bar", yAxisIndex: 1, data: totals, itemStyle: { color: "#94a3b8" }, barMaxWidth: 22 },
+    ],
+  });
+
+  // 告警等级分布
+  const byLevel = s.alerts.by_level || {};
+  initChart("chart-level").setOption({
+    title: { text: "告警等级分布", left: "center", textStyle: { fontSize: 14 } },
+    tooltip: { trigger: "item" },
+    legend: { bottom: 0 },
+    series: [{
+      type: "pie", radius: ["40%", "65%"], center: ["50%", "45%"],
+      data: Object.entries(byLevel).map(([k, v]) => ({ name: k, value: v })),
+      label: { formatter: "{b}: {c}" },
+    }],
+  });
+
+  // 告警状态分布
+  const byStatus = s.alerts.by_status || {};
+  initChart("chart-status").setOption({
+    title: { text: "告警状态分布", left: "center", textStyle: { fontSize: 14 } },
+    tooltip: { trigger: "item" },
+    legend: { bottom: 0 },
+    series: [{
+      type: "pie", radius: "60%", center: ["50%", "45%"],
+      data: Object.entries(byStatus).map(([k, v]) => ({ name: { new: "新", acked: "已确认", resolved: "已解决" }[k] || k, value: v })),
+    }],
+  });
+
+  // 引擎信息
+  document.getElementById("engine-info").innerHTML = `
+    <tr><td>匹配模式</td><td>${UI.esc(s.engine.mode)}</td></tr>
+    <tr><td>当前规则数</td><td class="num">${s.engine.rule_count}</td></tr>
+    <tr><td>网络节点数</td><td class="num">${s.engine.node_count}</td></tr>
+    <tr><td>最大聚合窗口</td><td class="num">${s.engine.max_window_sec}s</td></tr>
+    <tr><td>窗口聚合键</td><td class="num">${s.window.keys}</td></tr>
+    <tr><td>窗口内事件</td><td class="num">${s.window.total_events}</td></tr>
+    <tr><td>窗口丢弃事件</td><td class="num">${s.window.dropped_events}</td></tr>
+    <tr><td>告警去重比</td><td class="num">${s.alerts.dedup_ratio}</td></tr>`;
+}
+
+async function resetStats() {
+  if (!confirm("确认清空统计计数？")) return;
+  await API.post("/api/stats/reset");
+  UI.toast("已重置统计", "ok");
+  refresh();
+}
+
+boot("统计报表", () => {
+  const page = document.getElementById("page");
+  page.innerHTML = `
+    <div id="tiles"></div>
+    <div class="grid cols-2">
+      <div class="card"><div id="chart-rate" style="height:320px"></div></div>
+      <div class="card">
+        <div class="card-head"><h3>引擎运行状态</h3>
+          <button class="btn sm danger" onclick="resetStats()">重置统计</button></div>
+        <div class="table-wrap"><table id="engine-info"></table></div>
+      </div>
+      <div class="card"><div id="chart-level" style="height:300px"></div></div>
+      <div class="card"><div id="chart-status" style="height:300px"></div></div>
+    </div>`;
+  refresh();
+  setInterval(() => { if (autoRefresh && !document.hidden) refresh(); }, 3000);
+});
+</script>
+</body>
+</html>
