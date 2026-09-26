@@ -27,6 +27,7 @@ def create_app():
     # 运行时单例
     engine = RiskEngine(settings=get_settings())
     flows = FlowStore()
+    engine.flow_store = flows
     runtime.init(engine, flows)
 
     # 初始化样例数据（幂等）
@@ -76,7 +77,6 @@ def create_app():
                 ws.send(json.dumps(message, ensure_ascii=False))
             except Exception:
                 pass
-        engine.add_listener(send)
         engine.add_listener(send)
         # 连接后先推送一条快照（当前统计）
         try:

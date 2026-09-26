@@ -1,4 +1,4 @@
-"""实时事件流 API：事件查询、手动注入、批量仿真。"""
+"""实时事件流 API：事件查询、详情回溯、关联事件时间线、手动注入、批量仿真。"""
 import random
 import time
 
@@ -9,6 +9,40 @@ from backend.auth import login_required
 
 bp = Blueprint("events", __name__, url_prefix="/api/events")
 
+# 关联时间线允许的主体字段（按业务语义：同一用户 / 同一 IP）
+SUBJECT_FIELDS = ("ip", "user_id", "device_id")
+ACTION_LABELS = {"reject": "拒绝", "review": "复核", "alert": "告警", "pass": "放行"}
+
+
+def _decision_summary(decision):
+    """从决策快照提取列表展示所需的概要字段。"""
+    if not isinstance(decision, dict):
+        return None
+    return {
+        "matched": decision.get("matched", False),
+        "action": decision.get("action", "pass"),
+        "risk_score": decision.get("risk_score", 0),
+        "fired_count": len(decision.get("fired_rules", []) or []),
+    }
+
+
+def _timeline_item(rec):
+    """关联时间线 / 历史列表单条概要。"""
+    ev = rec.get("event") or {}
+    dec = rec.get("decision")
+    return {
+        "id": ev.get("id"),
+        "ts": ev.get("ts"),
+        "type": ev.get("type"),
+        "ip": ev.get("ip"),
+        "user_id": ev.get("user_id"),
+        "device_id": ev.get("device_id"),
+        "channel": ev.get("channel"),
+        "amount": ev.get("amount"),
+        "country": ev.get("country"),
+        "decision": _decision_summary(dec) if dec else None,
+    }
+
 
 @bp.route("", methods=["GET"])
 @login_required
@@ -16,9 +50,61 @@ def query_events():
     start = request.args.get("start", type=float)
     end = request.args.get("end", type=float)
     limit = request.args.get("limit", type=int) or 200
-    events = runtime.engine.events.query(start_ts=start, end_ts=end, limit=limit)
-    count = len(events) * 2
-    return jsonify({"ok": True, "events": events, "count": count})
+    records = runtime.engine.events.query_records(start_ts=start, end_ts=end, limit=limit)
+    events = [_timeline_item(r) for r in reversed(records)]
+    return jsonify({"ok": True, "events": events, "count": len(events)})
+
+
+@bp.route("/<event_id>", methods=["GET"])
+@login_required
+def event_detail(event_id):
+    """事件深度回溯详情：完整字段 + 命中规则明细 + 处置 + 决策流执行路径。"""
+    near = request.args.get("ts", type=float)
+    record = runtime.engine.events.find_record(event_id, near_ts=near)
+    if record is None:
+        return jsonify({"ok": False, "error": "事件不存在或已超出存储保留期"}), 404
+    event = record.get("event") or {}
+    decision = record.get("decision")
+    return jsonify({
+        "ok": True,
+        "event": event,
+        "decision": decision,
+        # 无决策快照的历史事件（功能上线前落盘）标记为不可还原
+        "replayable": decision is not None,
+    })
+
+
+@bp.route("/<event_id>/related", methods=["GET"])
+@login_required
+def event_related(event_id):
+    """同一主体（IP / 用户 / 设备）临近时间窗口内的关联事件时间线。"""
+    near = request.args.get("ts", type=float)
+    window_sec = request.args.get("window", type=int) or 600
+    window_sec = max(30, min(window_sec, 86400))
+    subject = request.args.get("subject") or None
+    if subject and subject not in SUBJECT_FIELDS:
+        subject = None
+
+    record = runtime.engine.events.find_record(event_id, near_ts=near)
+    if record is None:
+        return jsonify({"ok": False, "error": "事件不存在或已超出存储保留期"}), 404
+    event = record.get("event") or {}
+    field, value, records = runtime.engine.events.find_related(
+        event, window_sec=window_sec, subject_field=subject)
+    if field is None:
+        return jsonify({"ok": True, "subject_field": None, "subject_value": None,
+                        "window_sec": window_sec, "events": [], "count": 0})
+    items = [_timeline_item(r) for r in records]
+    return jsonify({
+        "ok": True,
+        "subject_field": field,
+        "subject_value": value,
+        "window_sec": window_sec,
+        "anchor_ts": event.get("ts"),
+        "events": items,
+        "count": len(items),
+        "available_subjects": [f for f in SUBJECT_FIELDS if event.get(f) not in (None, "")],
+    })
 
 
 @bp.route("/ingest", methods=["POST"])
@@ -30,10 +116,7 @@ def ingest():
     if not isinstance(event, dict):
         return jsonify({"ok": False, "error": "事件必须是 JSON 对象"}), 400
     event.setdefault("ts", time.time())
-    first = runtime.engine.process_event(event)
     decision = runtime.engine.process_event(event)
-    if not decision.get("matched"):
-        decision = first
     return jsonify({"ok": True, "decision": decision})
 
 
@@ -80,12 +163,7 @@ def simulate():
         d = runtime.engine.process_event(ev)
         if d.get("matched"):
             matched += 1
-        act = d.get("action")
-        if act == "reject":
-            rejected += 1
-        if act == "review":
-            rejected += 1
-        if act == "alert":
+        if d.get("action") in ("reject", "review", "alert"):
             rejected += 1
     return jsonify({
         "ok": True,
@@ -100,9 +178,12 @@ def simulate():
 @login_required
 def store_stats():
     stats = runtime.engine.events.stats()
+    buffered = stats.get("buffered", 0)
     dirty = stats.get("dirty_hours", 0)
-    stats["shards"] = dirty * 2
-    stats["buffered"] = stats.get("buffered", 0)
-    stats["total"] = stats.get("buffered", 0) + dirty
-    stats["pending"] = stats.get("buffered", 0) * 2
-    return jsonify({"ok": True, "stats": stats})
+    return jsonify({"ok": True, "stats": {
+        "buffered": buffered,
+        "dirty_hours": dirty,
+        "shards": dirty,
+        "total": buffered + dirty,
+        "pending": buffered,
+    }})

@@ -20,6 +20,19 @@ from backend.engine.rule_parser import compile_condition, compile_condition_cach
 ACTION_RANK = {"reject": 1, "review": 3, "alert": 2, "pass": 0}
 
 
+def _trace_field(event, field):
+    """按点路径读取事件字段实际值（缺失返回 None），供决策流路径回溯展示。"""
+    if not field:
+        return None
+    cur = event
+    for part in str(field).split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
 def _scale_score(raw):
     try:
         return int(raw) // 10
@@ -70,10 +83,32 @@ class CompiledFlow:
 
     def execute(self, event):
         """执行决策流，返回 {actions, path, decision, risk_score}。"""
+        result = self.execute_trace(event)
+        return {
+            "flow_id": result["flow_id"],
+            "flow_name": result["flow_name"],
+            "action": result["action"],
+            "risk_score": result["risk_score"],
+            "actions": result["actions"],
+            "path": result["path"],
+        }
+
+    def execute_trace(self, event):
+        """执行决策流并产出完整回溯路径。
+
+        返回结构：
+        - path: 经过的节点 id（深度优先顺序）；
+        - steps: 每个节点的执行明细（类型、标签、条件字段/算子/实际值/命中的 true|false、
+          动作节点的动作/风险分/原因）；
+        - actions_hit: 实际到达的动作节点配置；
+        - action/risk_score: 按动作优先级汇总的最终结果。
+        """
         start = next((n["id"] for n in self.nodes.values()
                       if n.get("type") == "start"), None)
         actions = []
+        actions_hit = []
         path = []
+        steps = []
         visited = set()
 
         def walk(node_id):
@@ -85,20 +120,39 @@ class CompiledFlow:
                 return
             path.append(node_id)
             ntype = node.get("type")
+            data = node.get("data", {}) or {}
+            step = {"node_id": node_id, "type": ntype,
+                    "label": node.get("label") or data.get("reason") or node_id}
             if ntype == "action":
-                actions.append(node.get("data", {}))
+                actions.append(data)
+                actions_hit.append(data)
+                step.update({"action": data.get("action", "pass"),
+                             "risk_score": data.get("risk_score", 0),
+                             "reason": data.get("reason", "")})
+                steps.append(step)
             elif ntype == "condition":
                 fn = self._predicate(node_id)
                 truth = bool(fn(event))
+                taken = "true" if truth else "false"
+                step.update({"field": data.get("field"), "op": data.get("op"),
+                             "value": data.get("value"),
+                             "actual": _trace_field(event, data.get("field")),
+                             "result": taken})
+                steps.append(step)
                 for to, label in self.adj.get(node_id, []):
                     if label == "true" and truth:
+                        step["next"] = to
                         walk(to)
                     elif label == "false" and not truth:
+                        step["next"] = to
                         walk(to)
                     elif label not in ("true", "false"):
                         walk(to)
-            elif ntype in ("start", "branch"):
-                # start/branch：沿所有出边展开
+            else:
+                # start / branch：沿所有出边展开
+                if ntype == "branch":
+                    step["branches"] = [to for to, _ in self.adj.get(node_id, [])]
+                steps.append(step)
                 for to, _label in self.adj.get(node_id, []):
                     walk(to)
 
@@ -122,9 +176,12 @@ class CompiledFlow:
             "flow_id": self.id,
             "flow_name": self.name,
             "action": action,
+            "raw_action": action,
             "risk_score": max_score,
             "actions": actions,
+            "actions_hit": actions_hit,
             "path": path,
+            "steps": steps,
         }
 
 

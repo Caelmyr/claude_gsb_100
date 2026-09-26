@@ -13,9 +13,19 @@
 let ws = null;
 let paused = false;
 let maxLines = 500;
-let lineCount = 0;
+const eventCache = new Map();   // event_id -> {event, decision}
+const CACHE_MAX = 800;
 
 const TYPE_ICON = { login: "🔑", register: "📝", order: "🛒", payment: "💳", transfer: "💸", withdraw: "🏧", sms: "✉️", api: "🔌" };
+const ACTION_LABEL = { reject: "拒绝", review: "复核", alert: "告警", pass: "放行" };
+const AGG_LABEL = { count: "计数", sum: "求和", avg: "均值", max: "最大值", min: "最小值", distinct_count: "去重计数" };
+const OP_LABEL = { "==": "=", "!=": "≠", ">": "&gt;", ">=": "≥", "<": "&lt;", "<=": "≤", in: "属于", not_in: "不属于", contains: "包含" };
+
+function cacheEvent(event, decision) {
+  if (!event || !event.id) return;
+  eventCache.set(event.id, { event, decision });
+  if (eventCache.size > CACHE_MAX) eventCache.delete(eventCache.keys().next().value);
+}
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -25,9 +35,9 @@ function connect() {
   ws.onmessage = (msg) => {
     let data;
     try { data = JSON.parse(msg.data); } catch (e) { return; }
-    if (data.kind === "event") appendEvent(data.event, data.decision);
-    else if (data.kind === "hello") {
-      // 连接握手，忽略
+    if (data.kind === "event") {
+      cacheEvent(data.event, data.decision);
+      appendEvent(data.event, data.decision);
     }
   };
   ws.onclose = () => { setStatus("已断开，3 秒后重连…", "danger"); setTimeout(connect, 3000); };
@@ -45,28 +55,300 @@ function appendEvent(event, decision) {
   const log = document.getElementById("events-log");
   const t = new Date(event.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
   const icon = TYPE_ICON[event.type] || "⚙️";
+  decision = decision || {};
   const actCls = "act-" + (decision.action || "pass");
-  const actLabel = { reject: "拒绝", review: "复核", alert: "告警", pass: "放行" }[decision.action] || decision.action;
+  const actLabel = ACTION_LABEL[decision.action] || decision.action || "放行";
   const risk = decision.risk_score || 0;
   const line = document.createElement("div");
   line.className = "ev-line";
+  line.title = "点击查看事件深度回溯";
   line.innerHTML = `<span class="t">${t}</span>
     <span class="tag">${icon} ${UI.esc(event.type)}</span>
     <span style="flex:1;color:#9ca3af">${UI.esc(event.ip || "")} ${UI.esc(event.user_id || "")} ${event.amount != null ? "¥" + event.amount : ""}</span>
-    ${decision.matched ? `<span class="tag">命中${decision.fired_rules.length}条</span>` : ""}
-    <span class="${actCls}">${actLabel} ${risk ? "· " + risk : ""}</span>`;
+    ${decision.matched ? `<span class="tag">命中${(decision.fired_rules || []).length}条</span>` : ""}
+    <span class="${actCls}">${UI.esc(actLabel)} ${risk ? "· " + risk : ""}</span>`;
+  line.onclick = () => openDetail(event.id, event.ts);
   log.appendChild(line);
-  lineCount++;
   while (log.childNodes.length > maxLines) log.removeChild(log.firstChild);
   log.scrollTop = log.scrollHeight;
 }
 
+async function loadHistory() {
+  try {
+    const r = await API.get("/api/events?limit=100");
+    const log = document.getElementById("events-log");
+    (r.events || []).reverse().forEach((it) => {
+      const event = { id: it.id, ts: it.ts, type: it.type, ip: it.ip, user_id: it.user_id, amount: it.amount };
+      cacheEvent(event, it.decision);
+      appendEvent(event, it.decision || {});
+    });
+  } catch (e) { /* 忽略历史加载失败 */ }
+}
+
+// ----------------------------------------------------------------------
+// 事件深度回溯详情
+// ----------------------------------------------------------------------
+let detailState = null;   // {id, ts, subject, window}
+
+async function openDetail(eventId, ts) {
+  const m = UI.modal("事件深度回溯", `<div class="empty">加载中…</div>`, "", { large: true });
+  detailState = { id: eventId, ts, subject: null, window: 600 };
+  try {
+    const r = await API.get(`/api/events/${encodeURIComponent(eventId)}?ts=${ts != null ? ts : ""}`);
+    renderDetail(m, r);
+  } catch (e) {
+    m.body.innerHTML = `<div class="empty">⚠️ ${UI.esc(e.message)}</div>`;
+  }
+}
+
+function renderDetail(m, r) {
+  const ev = r.event || {};
+  const dec = r.decision;
+  detailState.ts = ev.ts;
+  const action = dec ? (dec.action || "pass") : null;
+  const head = `
+    <div class="detail-summary">
+      <span class="ds-item"><span class="k">事件 ID</span><b class="mono">${UI.esc(ev.id || "-")}</b></span>
+      <span class="ds-item"><span class="k">类型</span>${UI.esc(ev.type || "-")} ${TYPE_ICON[ev.type] || "⚙️"}</span>
+      <span class="ds-item"><span class="k">时间</span>${UI.fmtTime(ev.ts)}</span>
+      <span class="ds-item"><span class="k">处置动作</span>${action ? UI.actionBadge(action) : '<span class="badge muted">无快照</span>'}</span>
+      <span class="ds-item"><span class="k">风险分</span><b>${dec ? dec.risk_score : "-"}</b></span>
+      ${dec && dec.elapsed_us != null ? `<span class="ds-item"><span class="k">引擎耗时</span>${dec.elapsed_us} μs</span>` : ""}
+      ${dec && dec.engine_version != null ? `<span class="ds-item"><span class="k">规则版本</span>v${UI.esc(dec.engine_version)}</span>` : ""}
+    </div>`;
+
+  m.body.innerHTML = head +
+    section(1, "完整事件字段", fieldsBlock(ev)) +
+    section(2, "命中规则与命中详情", rulesBlock(dec, r.replayable)) +
+    section(3, "最终处置与原因", decisionBlock(dec, r.replayable)) +
+    section(4, "决策流执行路径", flowsBlock(dec, r.replayable)) +
+    section(5, "关联事件时间线", `<div id="related-box"><div class="empty">加载中…</div></div>`);
+
+  loadRelated();
+}
+
+function section(no, title, content) {
+  return `<div class="detail-section"><h4><span class="sec-no">${no}</span>${title}</h4>
+    <div>${content}</div></div>`;
+}
+
+function fieldsBlock(ev) {
+  const keys = Object.keys(ev).sort();
+  const rows = keys.map((k) =>
+    `<div class="kv"><span class="k">${UI.esc(k)}</span><span class="v">${UI.esc(formatVal(ev[k]))}</span></div>`
+  ).join("");
+  return `<div class="kv-grid">${rows}</div>
+    <details class="mt"><summary class="muted" style="cursor:pointer;font-size:12px">查看原始 JSON</summary>
+    <pre class="json-view mono">${UI.esc(UI.jsonPretty(ev))}</pre></details>`;
+}
+
+function formatVal(v) {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function rulesBlock(dec, replayable) {
+  if (!replayable) return legacyNote();
+  const rules = (dec && dec.fired_rules) || [];
+  if (!rules.length) return `<div class="empty">未命中任何规则，事件直接放行</div>`;
+  return rules.map((rule, idx) => {
+    const conds = rule.conditions || [];
+    const aggs = rule.agg_values || [];
+    const condRows = conds.map((c) => `
+      <tr><td class="mono">${UI.esc(c.field)}</td>
+      <td>${OP_LABEL[c.op] != null ? OP_LABEL[c.op] : UI.esc(c.op)}</td>
+      <td class="mono">${UI.esc(formatVal(c.value))}</td>
+      <td class="mono">${UI.esc(formatVal(c.actual))}</td>
+      <td><span class="chip-ok">✓ 满足</span></td></tr>`).join("");
+    const aggRows = aggs.map((a) => `
+      <tr>
+        <td class="mono">${UI.esc(a.key_field)}<div class="muted">${UI.esc(a.key_value || "")}</div></td>
+        <td>${UI.esc(AGG_LABEL[a.agg_type] || a.agg_type)}</td>
+        <td>${a.window_sec}s</td>
+        <td class="num"><b>${UI.esc(formatVal(a.value))}</b></td>
+        <td>${OP_LABEL[a.op] != null ? OP_LABEL[a.op] : UI.esc(a.op)}</td>
+        <td class="num">${UI.esc(formatVal(a.threshold))}</td>
+        <td>${a.ok === false ? '<span class="chip-no">✗ 未达</span>' : '<span class="chip-ok">✓ 达标</span>'}</td>
+      </tr>`).join("");
+    return `<div class="hit-rule">
+      <div class="hr-head">
+        <span class="hr-name">#${idx + 1} ${UI.esc(rule.rule_name || rule.rule_id)}</span>
+        ${UI.actionBadge(rule.action)}
+        ${rule.level ? UI.levelBadge(rule.level) : ""}
+        <span class="badge muted">风险分 ${rule.risk_score}</span>
+        <span class="badge muted">优先级 ${rule.priority}</span>
+        <span class="mono muted" style="font-size:11px;margin-left:auto">${UI.esc(rule.rule_id)}</span>
+      </div>
+      <div class="hr-body">
+        ${rule.action_reason ? `<div class="muted mb" style="font-size:12px">规则处置原因：${UI.esc(rule.action_reason)}</div>` : ""}
+        ${conds.length ? `<div class="muted" style="font-size:12px;margin-bottom:4px">Alpha 条件（事件字段匹配）</div>
+          <div class="table-wrap"><table>
+          <thead><tr><th>字段</th><th>算子</th><th>期望值</th><th>实际值</th><th>结果</th></tr></thead>
+          <tbody>${condRows}</tbody></table></div>` : ""}
+        ${aggs.length ? `<div class="muted mt" style="font-size:12px;margin-bottom:4px">Beta 聚合条件（滑动窗口内统计 vs 阈值）</div>
+          <div class="table-wrap"><table>
+          <thead><tr><th>聚合主体</th><th>聚合类型</th><th>窗口</th><th>窗口内实际值</th><th>算子</th><th>阈值</th><th>结果</th></tr></thead>
+          <tbody>${aggRows}</tbody></table></div>` : `<div class="muted" style="font-size:12px;margin-top:6px">无聚合条件（纯字段规则）</div>`}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function decisionBlock(dec, replayable) {
+  if (!replayable) return legacyNote();
+  const reasons = dec.decision_reasons || (dec.fired_rules || []).map((r) => r.action_reason || r.reason);
+  const reasonHtml = reasons.length
+    ? `<ul>${[...new Set(reasons)].map((x) => `<li>${UI.esc(x)}</li>`).join("")}</ul>`
+    : "无命中规则，按默认策略放行。";
+  const alerts = dec.alerts || [];
+  const alertRows = alerts.length ? `
+    <div class="muted mt" style="font-size:12px;margin-bottom:4px">产生 / 聚合的告警（去重窗口内累加计数）</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>告警 ID</th><th>规则</th><th>级别</th><th>窗口内累计</th><th>本次新建</th><th>主体</th></tr></thead>
+      <tbody>${alerts.map((a) => `<tr>
+        <td class="mono">${UI.esc(a.alert_id)}</td>
+        <td>${UI.esc(a.rule_id)}</td>
+        <td>${a.level ? UI.levelBadge(a.level) : ""}</td>
+        <td class="num">${a.count}</td>
+        <td>${a.created ? '<span class="chip-ok">是</span>' : '<span class="muted">并入既有告警</span>'}</td>
+        <td class="mono">${UI.esc(formatVal(a.subject))}</td>
+      </tr>`).join("")}</tbody></table></div>` : "";
+  return `<div class="reason-box"><b>最终动作：</b>${UI.actionBadge(dec.action || "pass")}
+      <b style="margin-left:14px">最终风险分：</b>${dec.risk_score}
+      <div class="mt"><b>处置原因：</b>${reasonHtml}</div>
+    </div>${alertRows}`;
+}
+
+function flowsBlock(dec, replayable) {
+  if (!replayable) return legacyNote();
+  const traces = dec.flows || [];
+  if (!traces.length) return `<div class="empty">本次事件未经过任何已启用的决策流</div>`;
+  return traces.map((tr) => {
+    const stepsHtml = tr.steps.map((s, i) => {
+      const node = `<div class="fnode ${UI.esc(s.type)}">
+          <div class="fn-t">${nodeTypeLabel(s.type)}</div>
+          <div class="fn-l">${UI.esc(s.label || s.node_id)}</div>
+          ${conditionDetail(s)}${actionDetail(s)}${branchDetail(s)}
+        </div>`;
+      if (i >= tr.steps.length - 1) return node;
+      const arrow = s.type === "condition"
+        ? `<div class="farrow">── <b>${s.result === "true" ? "true ✓" : "false ✗"}</b> ──▶</div>`
+        : `<div class="farrow">──▶</div>`;
+      return node + arrow;
+    }).join("");
+    return `<div class="flow-trace">
+      <div class="ft-head">🔀 ${UI.esc(tr.flow_name || tr.flow_id)}
+        ${UI.actionBadge(tr.action === "review" ? "review" : tr.action)}
+        <span class="badge muted">流风险分 ${tr.risk_score}</span>
+        <span class="mono muted" style="font-size:11px;margin-left:auto">${UI.esc(tr.flow_id)}</span>
+      </div>
+      <div class="flow-steps">${stepsHtml}</div>
+    </div>`;
+  }).join("");
+}
+
+function nodeTypeLabel(t) {
+  return { start: "开始", condition: "条件", action: "动作", branch: "分支" }[t] || t;
+}
+function conditionDetail(s) {
+  if (s.type !== "condition") return "";
+  return `<div class="fn-d">${UI.esc(s.field)} ${UI.esc(s.op)} ${UI.esc(formatVal(s.value))}
+    <br>实际值：${UI.esc(formatVal(s.actual))} → <b class="${s.result === "true" ? "chip-ok" : "chip-no"}">${s.result}</b></div>`;
+}
+function actionDetail(s) {
+  if (s.type !== "action") return "";
+  return `<div class="fn-d">${UI.actionBadge(s.action)} 风险分 ${UI.esc(s.risk_score)}${s.reason ? " · " + UI.esc(s.reason) : ""}</div>`;
+}
+function branchDetail(s) {
+  if (s.type !== "branch" || !s.branches) return "";
+  return `<div class="fn-d">并行 ${s.branches.length} 个分支</div>`;
+}
+function legacyNote() {
+  return `<div class="reason-box" style="border-left-color:#94a3b8">
+    ℹ️ 该事件产生于「事件深度回溯」能力上线前，未落盘决策快照，命中规则与决策流路径无法还原。下方关联事件时间线仍可正常使用。</div>`;
+}
+
+// ----------------------------------------------------------------------
+// 关联事件时间线
+// ----------------------------------------------------------------------
+const WINDOW_OPTS = [[60, "±1 分钟"], [300, "±5 分钟"], [600, "±10 分钟"], [1800, "±30 分钟"], [3600, "±1 小时"]];
+
+async function loadRelated() {
+  const box = document.getElementById("related-box");
+  if (!box || !detailState) return;
+  box.innerHTML = `<div class="empty">加载中…</div>`;
+  const q = `window=${detailState.window}` + (detailState.subject ? `&subject=${detailState.subject}` : "");
+  try {
+    const r = await API.get(`/api/events/${encodeURIComponent(detailState.id)}/related?ts=${detailState.ts || ""}&${q}`);
+    renderRelated(box, r);
+  } catch (e) {
+    box.innerHTML = `<div class="empty">⚠️ ${UI.esc(e.message)}</div>`;
+  }
+}
+
+function renderRelated(box, r) {
+  if (!r.subject_field) {
+    box.innerHTML = `<div class="empty">该事件缺少主体字段（IP / 用户 / 设备），无法检索关联事件</div>`;
+    return;
+  }
+  if (!detailState.subject) detailState.subject = r.subject_field;
+  const tabs = (r.available_subjects || [r.subject_field]).map((f) =>
+    `<button class="btn sm ${detailState.subject === f ? "on" : ""}" data-subject="${UI.esc(f)}">${subjectLabel(f)}</button>`
+  ).join("");
+  const wins = WINDOW_OPTS.map(([w, label]) =>
+    `<button class="btn sm ${detailState.window === w ? "on" : ""}" data-window="${w}">${label}</button>`
+  ).join("");
+  const items = (r.events || []).map((it) => {
+    const isAnchor = it.id === detailState.id;
+    const hit = it.decision && it.decision.matched;
+    const dSecs = it.ts && r.anchor_ts ? (it.ts - r.anchor_ts) : 0;
+    const delta = isAnchor ? "当前事件" : `${dSecs >= 0 ? "+" : ""}${Math.round(dSecs)}s`;
+    const d = it.decision || {};
+    return `<div class="tl-item ${isAnchor ? "is-anchor" : ""} ${hit ? "is-hit" : ""}" ${isAnchor ? "" : `data-related-id="${UI.esc(it.id)}" data-related-ts="${it.ts || ""}"}`}>
+      <div class="flex" style="justify-content:space-between">
+        <span class="tl-time">${UI.fmtTime(it.ts)}</span>
+        <span class="tl-delta">${delta}</span>
+      </div>
+      <div class="tl-main">
+        ${TYPE_ICON[it.type] || "⚙️"} <b>${UI.esc(it.type)}</b>
+        <span class="muted">${UI.esc(it.ip || "")} · ${UI.esc(it.user_id || "")}${it.amount != null ? " · ¥" + it.amount : ""}</span>
+        <span style="margin-left:auto">${d.matched ? UI.actionBadge(d.action) : '<span class="badge muted">放行</span>'}</span>
+        ${d.risk_score ? `<span class="badge muted">${d.risk_score}</span>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+  box.innerHTML = `
+    <div class="flex" style="flex-wrap:wrap;margin-bottom:10px">
+      <span class="muted" style="font-size:12px">主体：<b>${subjectLabel(r.subject_field)}</b> = <span class="mono">${UI.esc(r.subject_value)}</span>（${r.count} 条）</span>
+      <span class="subject-tabs">${tabs}</span>
+      <span class="subject-tabs">${wins}</span>
+    </div>
+    <div class="timeline">${items || '<div class="empty">窗口内无其他关联事件</div>'}</div>`;
+  box.querySelectorAll(".tl-item[data-related-id]").forEach((el) => {
+    el.onclick = () => openDetail(el.getAttribute("data-related-id"),
+                                  parseFloat(el.getAttribute("data-related-ts")) || null);
+  });
+  box.querySelectorAll("[data-subject]").forEach((el) => {
+    el.onclick = () => { detailState.subject = el.getAttribute("data-subject"); loadRelated(); };
+  });
+  box.querySelectorAll("[data-window]").forEach((el) => {
+    el.onclick = () => { detailState.window = parseInt(el.getAttribute("data-window"), 10); loadRelated(); };
+  });
+}
+
+function subjectLabel(f) {
+  return { ip: "同一 IP", user_id: "同一用户", device_id: "同一设备" }[f] || f;
+}
+
+// ----------------------------------------------------------------------
 async function ingest() {
   let event;
   try { event = JSON.parse(document.getElementById("manual-event").value); }
   catch (e) { UI.toast("事件 JSON 错误：" + e.message, "err"); return; }
   const r = await API.post("/api/events/ingest", { event });
   UI.toast("已注入：" + (r.decision.action || "pass"), "ok");
+  openDetail(r.decision.event_id, r.decision.ts);
 }
 
 async function simulate() {
@@ -76,7 +358,7 @@ async function simulate() {
   btn.disabled = true; btn.textContent = "仿真中…";
   try {
     const r = await API.post("/api/events/simulate", { count, burst });
-    UI.toast(`仿真完成：${r.count} 条，命中 ${r.matched}，拒绝 ${r.rejected}`, "ok");
+    UI.toast(`仿真完成：${r.count} 条，命中 ${r.matched}，处置 ${r.rejected}`, "ok");
   } finally { btn.disabled = false; btn.textContent = "批量仿真"; }
 }
 
@@ -92,14 +374,14 @@ boot("实时事件流", () => {
           <button class="btn sm" onclick="document.getElementById('events-log').innerHTML=''">清空</button>
         </div>
       </div>
-      <div class="sub">事件经 WebSocket 实时推送，展示类型、来源与风控决策（拒绝 / 复核 / 告警 / 放行）</div>
+      <div class="sub">事件经 WebSocket 实时推送；<b>点击任意一条事件</b>可进入详情视图，回溯完整字段、命中规则、处置决策、决策流路径与关联事件时间线</div>
       <div class="events-log" id="events-log"></div>
     </div>
 
     <div class="grid cols-2">
       <div class="card">
         <h3>手动注入事件</h3>
-        <div class="sub">注入单条事件走完整风控链路（滑动窗口 + Rete 匹配 + 告警去重）</div>
+        <div class="sub">注入单条事件走完整风控链路（滑动窗口 + Rete 匹配 + 告警去重 + 决策流），注入后自动打开详情</div>
         <textarea id="manual-event" rows="7" class="mono">${UI.esc(UI.jsonPretty({ type: "transfer", ip: "10.0.0.1", user_id: "u999", amount: 120000, country: "CN", channel: "app" }))}</textarea>
         <button class="btn primary mt" onclick="ingest()">注入事件</button>
       </div>
@@ -115,6 +397,7 @@ boot("实时事件流", () => {
         <button class="btn primary" id="sim-btn" onclick="simulate()">批量仿真</button>
       </div>
     </div>`;
+  loadHistory();
   connect();
 });
 </script>

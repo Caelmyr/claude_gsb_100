@@ -25,6 +25,13 @@ from backend.event_store import EventStore
 from backend import config
 
 
+def _display_num(val):
+    """聚合值展示：整数值去掉浮点尾巴。"""
+    if isinstance(val, float) and val.is_integer():
+        return int(val)
+    return val
+
+
 class RiskEngine:
     def __init__(self, settings=None):
         settings = settings or {}
@@ -52,10 +59,14 @@ class RiskEngine:
             max_alert_keep=alert_keep,
         )
         self.events = EventStore()
+        # 决策流存储由 app 启动时注入（runtime.init 后调用 bind_flow_store）
+        self.flow_store = None
 
         self._listeners = set()
         self._listener_lock = threading.Lock()
         self._lock = threading.RLock()
+        self._id_seq = 0
+        self._id_seq_lock = threading.Lock()
 
         # 统计计数器与分钟级时间序列（供 ECharts 命中率/拒绝率）
         self._counters = {"total": 0, "matched": 0, "rejected": 0, "alerted": 0,
@@ -76,11 +87,6 @@ class RiskEngine:
     def _broadcast(self, message):
         with self._listener_lock:
             listeners = list(self._listeners)
-        for fn in listeners:
-            try:
-                fn(message)
-            except Exception:
-                pass
         for fn in listeners:
             try:
                 fn(message)
@@ -117,12 +123,74 @@ class RiskEngine:
     # ------------------------------------------------------------------
     # 主入口
     # ------------------------------------------------------------------
+    @staticmethod
+    def _alpha_checks(rule, event):
+        """逐条回放规则的 alpha 条件，记录字段实际值与命中情况，供详情回溯。"""
+        checks = []
+        for cond in rule.raw.get("conditions", []):
+            if not isinstance(cond, dict) or "agg" in cond or "field" not in cond:
+                continue
+            field = cond.get("field")
+            checks.append({
+                "field": field,
+                "op": cond.get("op", "=="),
+                "value": cond.get("value"),
+                "actual": _get_field(event, field),
+                "ok": True,  # 进入候选集的规则其 alpha 条件必然全满足
+            })
+        return checks
+
+    @staticmethod
+    def _agg_detail(spec, val):
+        """单条聚合条件的命中详情：窗口内实际计数/统计值与阈值对比。"""
+        return {
+            "key_field": spec.key_field,
+            "key_value": None,  # 由调用方按事件取值填充
+            "agg_type": spec.agg_type,
+            "value_field": spec.value_field,
+            "window_sec": spec.window_sec,
+            "op": spec.op,
+            "threshold": _display_num(spec.threshold),
+            "value": _display_num(val),
+        }
+
+    def _execute_flows(self, event, snapshot):
+        """执行所有启用的决策流，返回每条流的执行路径追踪（条件判定/分支/动作节点）。
+
+        决策流是规则之外的独立编排通道；此处记录每条流「经过了哪些条件与动作节点、
+        每个条件走了 true/false 哪条边」，供事件详情还原决策路径。
+        """
+        if self.flow_store is None:
+            return []
+        traces = []
+        try:
+            flows = self.flow_store.list_flows()
+        except Exception:
+            return []
+        for flow in flows:
+            if not flow.get("enabled", True):
+                continue
+            try:
+                compiled = self.flow_store.compile(flow["id"])
+                if compiled is None:
+                    continue
+                result = compiled.execute_trace(event)
+                result["engine_version"] = snapshot.version
+                traces.append(result)
+            except Exception:
+                continue
+        return traces
+
     def process_event(self, event):
         """处理单条事件，返回决策结果字典。"""
         start = time.perf_counter()
         ts = event.get("ts") or time.time()
         event.setdefault("ts", ts)
-        event.setdefault("id", event.get("id") or f"ev_{int(ts * 1000)}")
+        if not event.get("id"):
+            with self._id_seq_lock:
+                self._id_seq += 1
+                seq = self._id_seq
+            event["id"] = f"ev_{int(ts * 1000)}_{seq % 100000:05d}"
 
         snapshot = self.registry.current
 
@@ -140,7 +208,9 @@ class RiskEngine:
         # 3) beta 匹配（聚合条件）
         fired = []
         fired_agg = {}
+        candidate_checks = {}
         for rule in candidates:
+            candidate_checks[rule.id] = self._alpha_checks(rule, event)
             all_ok = True
             agg_values = []
             for spec in rule.agg_specs:
@@ -149,9 +219,10 @@ class RiskEngine:
                     all_ok = False
                     break
                 val = self.window.query(str(key), spec.window_sec, spec.agg_type, now=ts)
-                agg_values.append({"key_field": spec.key_field, "value": val,
-                                   "op": spec.op, "threshold": spec.threshold,
-                                   "agg_type": spec.agg_type})
+                detail = self._agg_detail(spec, val)
+                detail["key_value"] = str(key)
+                detail["ok"] = bool(spec.evaluate(val))
+                agg_values.append(detail)
                 if not spec.evaluate(val):
                     all_ok = False
                     break
@@ -186,8 +257,8 @@ class RiskEngine:
                     "subject": subject,
                 })
 
-        # 6) 持久化 + 统计
-        self.events.add(event, ts=ts)
+        # 6) 持久化 + 统计（事件与其决策快照一并落盘，供事后深度回溯）
+        flow_traces = self._execute_flows(event, snapshot)
         elapsed_us = int((time.perf_counter() - start) * 1e6)
 
         matched = len(fired) > 0
@@ -225,27 +296,55 @@ class RiskEngine:
         action_map = {r.id: r.action.get("type", "alert") for r in fired}
 
         def _detail(r):
+            rule_action = r.action
             return {
                 "rule_id": r.id,
                 "rule_name": name_map.get(r.id, r.name),
-                "reason": reason_map.get(r.id, r.action.get("reason", r.name)),
-                "risk_score": int(r.action.get("risk_score", 50)),
+                "reason": reason_map.get(r.id, rule_action.get("reason", r.name)),
+                "action_reason": rule_action.get("reason", r.name),
+                "level": rule_action.get("level"),
+                "risk_score": int(rule_action.get("risk_score", 50)),
                 "action": action_map.get(r.id, "alert"),
                 "priority": r.priority,
+                "tags": list(getattr(r, "tags", []) or []),
+                "conditions": candidate_checks.get(r.id, self._alpha_checks(r, event)),
                 "agg_values": fired_agg.get(r.id, []),
             }
+
+        fired_details = [_detail(r) for r in fired]
+        # 处置原因：汇总各命中规则给出的原因（按优先级顺序去重）
+        decision_reasons = []
+        for d in fired_details:
+            txt = d.get("action_reason") or d.get("reason")
+            if txt and txt not in decision_reasons:
+                decision_reasons.append(txt)
+        # 决策流中实际到达的动作节点也作为处置依据补充
+        for tr in flow_traces:
+            for an in tr.get("actions_hit", []):
+                txt = an.get("reason")
+                if txt and txt not in decision_reasons:
+                    decision_reasons.append(f"[{tr.get('flow_name')}] {txt}")
 
         decision = {
             "event_id": event.get("id"),
             "ts": ts,
             "matched": matched,
             "action": display_action,
+            "raw_action": action,
             "risk_score": max_score,
-            "fired_rules": [_detail(r) for r in fired],
+            "fired_rules": fired_details,
+            "decision_reasons": decision_reasons,
             "alerts": alert_results,
+            "flows": flow_traces,
             "elapsed_us": elapsed_us,
             "engine_version": snapshot.version,
         }
+
+        # 事件与决策快照一并落盘（持久化失败不影响实时链路）
+        try:
+            self.events.add({"event": event, "decision": decision}, ts=ts)
+        except Exception:
+            pass
 
         # 7) 广播给 WebSocket 订阅者
         self._broadcast({
@@ -266,7 +365,9 @@ class RiskEngine:
         candidates = snapshot.matcher.match(event)
         fired = []
         fired_agg = {}
+        candidate_checks = {}
         for rule in candidates:
+            candidate_checks[rule.id] = self._alpha_checks(rule, event)
             all_ok = True
             agg_values = []
             for spec in rule.agg_specs:
@@ -275,9 +376,10 @@ class RiskEngine:
                     all_ok = False
                     break
                 val = self.window.query(str(key), spec.window_sec, spec.agg_type, now=ts)
-                agg_values.append({"key_field": spec.key_field, "value": val,
-                                   "op": spec.op, "threshold": spec.threshold,
-                                   "agg_type": spec.agg_type})
+                detail = self._agg_detail(spec, val)
+                detail["key_value"] = str(key)
+                detail["ok"] = bool(spec.evaluate(val))
+                agg_values.append(detail)
                 if not spec.evaluate(val):
                     all_ok = False
                     break
@@ -293,8 +395,11 @@ class RiskEngine:
                 "rule_id": r.id,
                 "rule_name": r.description,
                 "reason": r.name,
+                "action_reason": r.action.get("reason", r.name),
+                "level": r.action.get("level"),
                 "risk_score": int(r.action.get("risk_score", 50)),
                 "action": r.action.get("type", "alert"),
+                "conditions": candidate_checks.get(r.id, []),
                 "agg_values": fired_agg.get(r.id, []),
             }
 

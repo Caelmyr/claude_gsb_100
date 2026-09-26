@@ -12,7 +12,7 @@
 | 登录 / 总览 | `index.html` | 登录认证、系统概览看板、关键指标 |
 | 规则配置 | `rules.html` | 规则 CRUD、CodeMirror JSON 编辑器、语法校验、启停 |
 | 决策流设计 | `flows.html` | 可视化拖拽节点（条件 / 动作 / 分支）编排决策流 |
-| 实时事件流 | `events.html` | WebSocket 滚动展示实时事件与命中告警 |
+| 实时事件流 | `events.html` | WebSocket 滚动展示实时事件与命中告警；点击任意事件进入**深度回溯详情**（完整字段、命中规则及窗口计数/阈值、处置动作/风险分/原因、决策流执行路径、同主体关联事件时间线） |
 | 告警列表 | `alerts.html` | 告警查询、去重计数、标记处理、导出（CSV/JSON） |
 | 统计报表 | `stats.html` | ECharts 图表：命中率、拒绝率、事件趋势、规则命中排行 |
 | 用户管理 | `users.html` | 用户 CRUD、角色（admin/analyst/viewer）、重置密码 |
@@ -28,7 +28,7 @@
 - **版本回滚**：每次保存追加版本历史快照，回滚以更高版本号重新发布
 - **告警聚合去重**：规则 + 主体字段指纹哈希索引，时间窗内累加计数，避免告警风暴
 - **JSON 并发读写安全**：进程内 RLock + 跨进程 flock + 临时文件 + fsync + os.replace 原子替换
-- **事件分片存储**：按小时分片 JSON 文件，内存缓冲 + 后台线程异步刷盘
+- **事件分片存储**：按小时分片 JSON 文件，内存缓冲 + 后台线程异步刷盘；事件与决策快照（命中规则、聚合窗口实际值、告警、决策流执行路径）一并落盘，支持按事件 ID 深度回溯与同主体关联时间线检索
 - **WebSocket 实时推送**：命中事件与告警实时广播到前端
 
 ## 📁 项目结构
@@ -116,7 +116,7 @@ python run.py
 
 - 认证：`POST /api/login`、`POST /api/logout`、`GET /api/me`
 - 规则：`GET/POST /api/rules`、`GET/PUT/DELETE /api/rules/<id>`、`POST /api/rules/validate`、`POST /api/rules/<id>/enable`、`GET /api/rules/<id>/versions`、`POST /api/rules/<id>/rollback`
-- 事件：`GET /api/events`、`POST /api/events/ingest`、`POST /api/events/simulate`、`GET /api/events/store_stats`
+- 事件：`GET /api/events`、`GET /api/events/<id>`（深度回溯详情）、`GET /api/events/<id>/related`（同 IP/用户/设备临近窗口关联时间线）、`POST /api/events/ingest`、`POST /api/events/simulate`、`GET /api/events/store_stats`
 - 告警：`GET /api/alerts`、`POST /api/alerts/mark`、`GET /api/alerts/export`、`GET /api/alerts/stats`
 - 统计：`GET /api/stats`、`POST /api/stats/reset`
 - 决策流：`GET/POST /api/flows`、`GET/PUT/DELETE /api/flows/<id>`

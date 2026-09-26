@@ -63,7 +63,8 @@ window.UI = (function () {
     const p = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
-  function modal(title, bodyHtml, footHtml) {
+  function modal(title, bodyHtml, footHtml, opts) {
+    opts = opts || {};
     let mask = document.getElementById("modal-mask");
     if (!mask) {
       mask = document.createElement("div");
@@ -76,11 +77,15 @@ window.UI = (function () {
       </div>`;
       document.body.appendChild(mask);
     }
+    const modalEl = mask.querySelector(".modal");
+    modalEl.classList.toggle("modal-lg", !!opts.large);
     mask.querySelector(".m-title").textContent = title;
     mask.querySelector(".modal-body").innerHTML = bodyHtml;
     const foot = mask.querySelector(".modal-foot");
     foot.innerHTML = footHtml || "";
     mask.classList.add("show");
+    const body = mask.querySelector(".modal-body");
+    if (body) body.scrollTop = 0;
     mask.querySelector(".m-close").onclick = () => mask.classList.remove("show");
     mask.onclick = (e) => { if (e.target === mask) mask.classList.remove("show"); };
     return {
