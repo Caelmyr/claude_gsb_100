@@ -80,6 +80,7 @@ window.UI = (function () {
     mask.querySelector(".modal-body").innerHTML = bodyHtml;
     const foot = mask.querySelector(".modal-foot");
     foot.innerHTML = footHtml || "";
+    mask.querySelector(".modal").classList.remove("detail-modal");
     mask.classList.add("show");
     mask.querySelector(".m-close").onclick = () => mask.classList.remove("show");
     mask.onclick = (e) => { if (e.target === mask) mask.classList.remove("show"); };

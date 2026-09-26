@@ -12,10 +12,12 @@
 <script>
 let ws = null;
 let paused = false;
-let maxLines = 500;
-let lineCount = 0;
+const maxLines = 500;
 
 const TYPE_ICON = { login: "🔑", register: "📝", order: "🛒", payment: "💳", transfer: "💸", withdraw: "🏧", sms: "✉️", api: "🔌" };
+const ACT_LABEL = { reject: "拒绝", review: "复核", alert: "告警", pass: "放行" };
+const AGG_LABEL = { count: "计数", sum: "求和", avg: "均值", max: "最大", min: "最小", distinct_count: "去重计数" };
+const NODE_TYPE_LABEL = { start: "入口", condition: "条件", action: "动作", branch: "分支" };
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -25,8 +27,9 @@ function connect() {
   ws.onmessage = (msg) => {
     let data;
     try { data = JSON.parse(msg.data); } catch (e) { return; }
-    if (data.kind === "event") appendEvent(data.event, data.decision);
-    else if (data.kind === "hello") {
+    if (data.kind === "event") {
+      renderEventLine(data.event, data.decision, true);
+    } else if (data.kind === "hello") {
       // 连接握手，忽略
     }
   };
@@ -40,26 +43,279 @@ function setStatus(text, cls) {
   el.className = "badge " + cls;
 }
 
-function appendEvent(event, decision) {
-  if (paused) return;
+function fmtTimeShort(ts) {
+  return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function renderEventLine(event, decision, isLive) {
+  if (paused && isLive) return;
   const log = document.getElementById("events-log");
-  const t = new Date(event.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+  // 已在列表中的事件（历史与实时推送重叠）不重复渲染
+  if (event.id && log.querySelector(`[data-eid="${CSS.escape(event.id)}"]`)) return;
+  const t = fmtTimeShort(event.ts);
   const icon = TYPE_ICON[event.type] || "⚙️";
+  decision = decision || { action: "pass", risk_score: 0, matched: false };
   const actCls = "act-" + (decision.action || "pass");
-  const actLabel = { reject: "拒绝", review: "复核", alert: "告警", pass: "放行" }[decision.action] || decision.action;
+  const actLabel = ACT_LABEL[decision.action] || decision.action;
   const risk = decision.risk_score || 0;
   const line = document.createElement("div");
-  line.className = "ev-line";
+  line.className = "ev-line clickable";
+  line.title = "点击查看事件深度回溯";
+  line.dataset.eid = event.id || "";
   line.innerHTML = `<span class="t">${t}</span>
     <span class="tag">${icon} ${UI.esc(event.type)}</span>
-    <span style="flex:1;color:#9ca3af">${UI.esc(event.ip || "")} ${UI.esc(event.user_id || "")} ${event.amount != null ? "¥" + event.amount : ""}</span>
-    ${decision.matched ? `<span class="tag">命中${decision.fired_rules.length}条</span>` : ""}
-    <span class="${actCls}">${actLabel} ${risk ? "· " + risk : ""}</span>`;
-  log.appendChild(line);
-  lineCount++;
-  while (log.childNodes.length > maxLines) log.removeChild(log.firstChild);
-  log.scrollTop = log.scrollHeight;
+    <span class="ev-main">${UI.esc(event.ip || "")} ${UI.esc(event.user_id || "")} ${event.amount != null ? "¥" + event.amount : ""}</span>
+    ${decision.matched ? `<span class="tag ev-hit">命中${decision.fired_rules.length}条</span>` : ""}
+    ${isLive ? "" : `<span class="tag ev-hist">历史</span>`}
+    <span class="${actCls}">${actLabel}${risk ? " · " + risk : ""}</span>`;
+  line.onclick = () => openDetail(event.id);
+  if (isLive) {
+    log.appendChild(line);
+    while (log.childNodes.length > maxLines) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+  } else {
+    log.prepend(line);
+    while (log.childNodes.length > maxLines) log.removeChild(log.lastChild);
+  }
 }
+
+async function loadHistory() {
+  const log = document.getElementById("events-log");
+  try {
+    const r = await API.get("/api/events?limit=50");
+    // 列表为最新在前，逐条 prepend 还原时间正序
+    r.events.slice().reverse().forEach(item => {
+      renderEventLine(item.event, item.decision, false);
+    });
+    if (!r.events.length) {
+      log.innerHTML = `<div class="ev-empty">暂无历史事件，可在下方注入或批量仿真</div>`;
+    }
+  } catch (e) {
+    UI.toast("历史事件加载失败：" + e.message, "err");
+  }
+}
+
+/* ========================= 事件详情深度回溯 ========================= */
+
+let detailWin = null;
+let detailWindowSec = 600;
+
+async function openDetail(eventId) {
+  if (!eventId) { UI.toast("该事件缺少 id，无法回溯", "err"); return; }
+  detailWin = UI.modal("事件深度回溯", `<div class="detail-loading">加载中…</div>`);
+  document.getElementById("modal-mask").querySelector(".modal").classList.add("detail-modal");
+  detailWin.body.classList.add("detail-body");
+  try {
+    const r = await API.get("/api/events/" + encodeURIComponent(eventId));
+    renderDetail(r);
+    loadRelated(eventId);
+  } catch (e) {
+    detailWin.body.innerHTML = `<div class="detail-err">加载失败：${UI.esc(e.message)}</div>`;
+  }
+}
+
+function section(title, html) {
+  return `<div class="detail-section"><div class="detail-section-h">${title}</div><div class="detail-section-b">${html}</div></div>`;
+}
+
+function kvTable(obj) {
+  const keys = Object.keys(obj || {});
+  if (!keys.length) return `<div class="muted">（无字段）</div>`;
+  return `<table class="kv-table"><tbody>${keys.map(k => {
+    const v = obj[k];
+    let display;
+    if (v == null) display = `<span class="muted">null</span>`;
+    else if (typeof v === "object") display = `<pre class="kv-json">${UI.esc(UI.jsonPretty(v))}</pre>`;
+    else display = UI.esc(String(v));
+    return `<tr><td class="kv-k">${UI.esc(k)}</td><td class="kv-v">${display}</td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+function aggHtml(checks) {
+  if (!checks || !checks.length) return "";
+  return checks.map(a => {
+    const valFmt = Number.isFinite(a.value) ? a.value : UI.esc(a.value);
+    const thrFmt = Number.isFinite(a.threshold) ? a.threshold : UI.esc(a.threshold);
+    return `<div class="agg-chip" title="聚合条件求值">
+      <span class="agg-key">${UI.esc(a.key_field)}${a.key_value != null ? "=" + UI.esc(a.key_value) : ""}</span>
+      <span class="agg-expr">${AGG_LABEL[a.agg_type] || a.agg_type}(${a.window_sec}s)
+        <b>${valFmt}</b> ${UI.esc(a.op)} ${thrFmt}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderRuleCard(fr, decisiveIds) {
+  const decisive = (decisiveIds || []).includes(fr.rule_id);
+  const alphaRows = (fr.alpha_checks || []).map(c => `
+    <tr>
+      <td class="mono">${UI.esc(c.field)}</td>
+      <td class="mono">${UI.esc(c.op)}</td>
+      <td class="mono">${c.value == null ? "null" : (typeof c.value === "object" ? UI.esc(JSON.stringify(c.value)) : UI.esc(String(c.value)))}</td>
+      <td class="mono">${c.actual == null ? '<span class="muted">null（字段缺失）</span>' : (typeof c.actual === "object" ? UI.esc(JSON.stringify(c.actual)) : UI.esc(String(c.actual)))}</td>
+      <td>${c.ok ? '<span class="ok-dot">✔ 满足</span>' : '<span class="bad-dot">✘ 不满足</span>'}</td>
+    </tr>`).join("");
+  return `<div class="rule-card ${decisive ? "decisive" : ""}">
+    <div class="rule-card-h">
+      <div class="rule-title">${UI.esc(fr.rule_name)} <span class="mono muted">${UI.esc(fr.rule_id)}</span>
+        ${decisive ? '<span class="badge danger">决定最终处置</span>' : ""}
+      </div>
+      <div class="rule-badges">
+        ${UI.actionBadge(fr.action)}<span class="badge">风险分 ${UI.esc(fr.risk_score)}</span>
+        ${fr.level ? UI.levelBadge(fr.level) : ""}
+        <span class="badge muted">优先级 ${UI.esc(fr.priority)}</span>
+      </div>
+    </div>
+    ${fr.description ? `<div class="rule-desc">${UI.esc(fr.description)}</div>` : ""}
+    <div class="rule-reason">处置原因：${UI.esc(fr.reason || "-")}</div>
+    ${alphaRows ? `<div class="detail-sub">普通条件（alpha）求值</div>
+      <table class="cond-table"><thead><tr><th>字段</th><th>算子</th><th>期望值</th><th>实际值</th><th>结果</th></tr></thead>
+      <tbody>${alphaRows}</tbody></table>` : `<div class="muted detail-sub">无普通条件（纯聚合规则）</div>`}
+    <div class="detail-sub">聚合窗口（beta）命中详情</div>
+    ${aggHtml(fr.agg_values) || '<div class="muted">无聚合条件</div>'}
+  </div>`;
+}
+
+function renderFlowTrace(trace) {
+  const steps = (trace.steps || []).map((s, i) => {
+    let detail;
+    if (s.type === "condition") {
+      const actual = s.actual_value == null ? "null（字段缺失）" :
+        (typeof s.actual_value === "object" ? JSON.stringify(s.actual_value) : String(s.actual_value));
+      detail = `<span class="mono">${UI.esc(s.field)} ${UI.esc(s.op)} ${UI.esc(JSON.stringify(s.compare_value))}</span>
+        <span class="muted">实际值：<b>${UI.esc(actual)}</b></span>
+        <span class="badge ${s.result ? "success" : "muted"}">${s.result ? "true → 走真分支" : "false → 走假分支"}</span>`;
+    } else if (s.type === "action") {
+      detail = `${UI.actionBadge(s.action)}<span class="badge">风险分 ${UI.esc(s.risk_score)}</span>
+        <span class="muted">${UI.esc(s.reason || "")}</span>`;
+    } else {
+      detail = `<span class="muted">${NODE_TYPE_LABEL[s.type] || s.type}节点</span>`;
+    }
+    return `<li class="flow-step">
+      <div class="flow-step-dot ${s.type}">${i + 1}</div>
+      <div class="flow-step-body">
+        <div class="flow-step-title">${UI.esc(s.label)} <span class="muted mono">${UI.esc(s.node_id)}</span></div>
+        <div class="flow-step-detail">${detail}</div>
+      </div>
+    </li>`;
+  }).join("");
+  return `<div class="flow-trace">
+    <div class="flow-trace-h">
+      <span>🔀 ${UI.esc(trace.flow_name)} <span class="mono muted">${UI.esc(trace.flow_id)}</span></span>
+      <span>${UI.actionBadge(trace.action)}<span class="badge">风险分 ${UI.esc(trace.risk_score)}</span>
+      <span class="badge muted">路径回放</span></span>
+    </div>
+    <ol class="flow-path">${steps || '<li class="muted">未经过任何节点</li>'}</ol>
+  </div>`;
+}
+
+function renderDetail(r) {
+  const ev = r.event;
+  const d = r.decision || {};
+  const fired = d.fired_rules || [];
+
+  const headHtml = `<div class="detail-head">
+    <div class="detail-title">${TYPE_ICON[ev.type] || "⚙️"} ${UI.esc(ev.type)}
+      <span class="mono muted">${UI.esc(ev.id || "")}</span>
+      ${r.replayed ? '<span class="badge warning" title="该事件为旧数据，决策由当前规则集只读回放，窗口聚合数可能与当时不同">历史回放</span>' : ""}
+    </div>
+    <div class="detail-head-meta">
+      <span>🕒 ${UI.fmtTime(ev.ts)}</span>
+      <span>🌐 ${UI.esc(ev.ip || "-")}</span>
+      <span>👤 ${UI.esc(ev.user_id || "-")}</span>
+      ${ev.amount != null ? `<span>💰 ¥${UI.esc(ev.amount)}</span>` : ""}
+    </div>
+    <div class="detail-verdict">
+      <div class="verdict-item"><span class="verdict-label">最终处置</span>${UI.actionBadge(d.action)}</div>
+      <div class="verdict-item"><span class="verdict-label">风险分</span><span class="risk-num ${d.risk_score >= 80 ? "danger" : d.risk_score >= 50 ? "warning" : ""}">${UI.esc(d.risk_score || 0)}</span></div>
+      <div class="verdict-item verdict-reason"><span class="verdict-label">处置原因</span><span>${UI.esc(d.reason || (d.matched ? "-" : "未命中任何规则，正常放行"))}</span></div>
+      <div class="verdict-item"><span class="verdict-label">耗时</span><span class="mono">${UI.esc(d.elapsed_us != null ? d.elapsed_us + " μs" : "-")}</span></div>
+      <div class="verdict-item"><span class="verdict-label">规则版本</span><span class="mono">v${UI.esc(d.engine_version || "-")}</span></div>
+    </div>
+  </div>`;
+
+  const rulesHtml = fired.length
+    ? fired.map(fr => renderRuleCard(fr, d.decisive_rule_ids)).join("")
+    : `<div class="muted">该事件未命中任何规则</div>`;
+
+  const alertsHtml = (d.alerts && d.alerts.length)
+    ? `<div class="detail-sub">产生/合并的告警（${d.alerts.length}）</div>
+       <table class="cond-table"><thead><tr><th>告警 ID</th><th>规则</th><th>新/合并</th><th>累计次数</th><th>主体</th></tr></thead><tbody>
+       ${d.alerts.map(a => `<tr>
+         <td class="mono">${UI.esc(a.alert_id)}</td>
+         <td class="mono">${UI.esc(a.rule_id)}</td>
+         <td>${a.created ? '<span class="badge info">新建</span>' : '<span class="badge muted">合并去重</span>'}</td>
+         <td class="num">${UI.esc(a.count)}</td>
+         <td class="mono">${UI.esc(JSON.stringify(a.subject || {}))}</td>
+       </tr>`).join("")}</tbody></table>`
+    : "";
+
+  const flowsHtml = (r.flow_traces && r.flow_traces.length)
+    ? r.flow_traces.map(renderFlowTrace).join("")
+    : `<div class="muted">暂无启用中的决策流</div>`;
+
+  detailWin.body.innerHTML = headHtml
+    + section(`📋 完整事件字段（${Object.keys(ev).length} 个）`, kvTable(ev))
+    + section(`🎯 命中规则（${fired.length} 条）`, rulesHtml + alertsHtml)
+    + section(`🔀 决策流执行路径`,
+        `<div class="sub" style="margin-bottom:10px">以下为事件在各启用决策流中的执行路径回放（只读，不重复处置）</div>` + flowsHtml)
+    + section(`🔗 关联事件时间线`,
+        `<div class="flex" style="margin-bottom:10px;gap:8px;align-items:center">
+           <span class="muted">同主体（IP / 用户）临近窗口：</span>
+           <select id="related-window" class="input-sm">
+             <option value="300">前后 5 分钟</option>
+             <option value="600" selected>前后 10 分钟</option>
+             <option value="1800">前后 30 分钟</option>
+             <option value="3600">前后 1 小时</option>
+           </select>
+         </div>
+         <div id="related-box"><div class="muted">加载中…</div></div>`);
+
+  const sel = detailWin.body.querySelector("#related-window");
+  sel.value = String(detailWindowSec);
+  sel.onchange = () => { detailWindowSec = parseInt(sel.value, 10); loadRelated(ev.id); };
+}
+
+async function loadRelated(eventId) {
+  const box = detailWin.body.querySelector("#related-box");
+  if (!box) return;
+  box.innerHTML = `<div class="muted">加载中…</div>`;
+  try {
+    const r = await API.get(`/api/events/${encodeURIComponent(eventId)}/related?window_sec=${detailWindowSec}`);
+    box.innerHTML = renderTimeline(r, eventId);
+    box.querySelectorAll("[data-eid]").forEach(el => {
+      el.onclick = () => openDetail(el.dataset.eid);
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="detail-err">关联事件加载失败：${UI.esc(e.message)}</div>`;
+  }
+}
+
+function renderTimeline(r, anchorId) {
+  const subj = r.subject || {};
+  const subjText = [
+    subj.ip ? `IP ${subj.ip}` : null,
+    subj.user_id ? `用户 ${subj.user_id}` : null,
+  ].filter(Boolean).join(" / ") || "无主体字段";
+  if (!r.events.length) return `<div class="muted">窗口内无关联事件</div>`;
+  const rows = r.events.map(item => {
+    const ev = item.event;
+    const d = item.decision || {};
+    const isAnchor = ev.id === anchorId;
+    const icon = TYPE_ICON[ev.type] || "⚙️";
+    return `<div class="tl-item ${isAnchor ? "anchor" : ""} clickable" data-eid="${UI.esc(ev.id || "")}">
+      <div class="tl-dot ${isAnchor ? d.action || "pass" : (d.action || "pass")}"></div>
+      <div class="tl-time mono">${UI.fmtTime(ev.ts).slice(11)}</div>
+      <div class="tl-type">${icon} ${UI.esc(ev.type)}${ev.amount != null ? ` <span class="muted">¥${UI.esc(ev.amount)}</span>` : ""}</div>
+      <div class="tl-sub muted">${UI.esc(ev.ip || "")} ${UI.esc(ev.user_id || "")}</div>
+      <div class="tl-act act-${d.action || "pass"}">${d.matched ? `命中${d.fired_rules.length} · ` : ""}${ACT_LABEL[d.action] || "—"}${d.risk_score ? " · " + d.risk_score : ""}</div>
+      ${isAnchor ? '<div class="tl-anchor-tag badge info">当前事件</div>' : ""}
+    </div>`;
+  }).join("");
+  return `<div class="tl-subject">主体：<b>${UI.esc(subjText)}</b> · 窗口 ±${Math.round(r.window_sec / 60)} 分钟 · 共 ${r.count} 条（点击任一条可继续回溯）</div>
+    <div class="timeline">${rows}</div>`;
+}
+
+/* ========================= 注入 / 仿真 ========================= */
 
 async function ingest() {
   let event;
@@ -76,7 +332,7 @@ async function simulate() {
   btn.disabled = true; btn.textContent = "仿真中…";
   try {
     const r = await API.post("/api/events/simulate", { count, burst });
-    UI.toast(`仿真完成：${r.count} 条，命中 ${r.matched}，拒绝 ${r.rejected}`, "ok");
+    UI.toast(`仿真完成：${r.count} 条，命中 ${r.matched}，处置 ${r.rejected}`, "ok");
   } finally { btn.disabled = false; btn.textContent = "批量仿真"; }
 }
 
@@ -88,11 +344,11 @@ boot("实时事件流", () => {
         <h3>⚡ 实时事件流</h3>
         <div class="flex">
           <span>WebSocket：</span><span id="ws-status" class="badge muted">未连接</span>
-          <button class="btn sm" onclick="paused=!paused;this.textContent=paused?'已暂停':'暂停滚动'">暂停滚动</button>
-          <button class="btn sm" onclick="document.getElementById('events-log').innerHTML=''">清空</button>
+          <button class="btn sm" id="btn-pause">暂停滚动</button>
+          <button class="btn sm" id="btn-clear">清空</button>
         </div>
       </div>
-      <div class="sub">事件经 WebSocket 实时推送，展示类型、来源与风控决策（拒绝 / 复核 / 告警 / 放行）</div>
+      <div class="sub">点击任意一条事件进入深度回溯：完整字段、命中规则与聚合窗口计数、最终处置与原因、决策流执行路径、同主体关联事件时间线</div>
       <div class="events-log" id="events-log"></div>
     </div>
 
@@ -115,6 +371,16 @@ boot("实时事件流", () => {
         <button class="btn primary" id="sim-btn" onclick="simulate()">批量仿真</button>
       </div>
     </div>`;
+
+  document.getElementById("btn-pause").onclick = function () {
+    paused = !paused;
+    this.textContent = paused ? "继续滚动" : "暂停滚动";
+  };
+  document.getElementById("btn-clear").onclick = () => {
+    document.getElementById("events-log").innerHTML = "";
+  };
+
+  loadHistory();
   connect();
 });
 </script>

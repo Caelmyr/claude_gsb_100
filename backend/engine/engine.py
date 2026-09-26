@@ -20,7 +20,7 @@ import threading
 from backend.engine.hot_update import RuleRegistry
 from backend.engine.window import SlidingWindowAggregator
 from backend.engine.alert import AlertAggregator
-from backend.engine.rule_parser import _get_field
+from backend.engine.rule_parser import _get_field, compile_condition
 from backend.event_store import EventStore
 from backend import config
 
@@ -81,23 +81,26 @@ class RiskEngine:
                 fn(message)
             except Exception:
                 pass
-        for fn in listeners:
-            try:
-                fn(message)
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
-    # 决策动作优先级
+    # 决策动作优先级（reject > review > alert > pass）
     # ------------------------------------------------------------------
-    _ACTION_RANK = {"reject": 2, "review": 3, "alert": 1, "pass": 0}
+    _ACTION_RANK = {"reject": 3, "review": 2, "alert": 1, "pass": 0}
+
+    @staticmethod
+    def _alpha_pred(cond, rule_id):
+        """编译单条普通（非聚合）条件的判别式，用于详情还原条件求值。"""
+        try:
+            return compile_condition(cond, rule_id)[1]
+        except Exception:
+            return lambda ev: False
 
     def _decide(self, fired):
         """根据命中规则集计算最终动作与风险分。"""
         if not fired:
             return "pass", 0
         ranks = self._ACTION_RANK
-        best_type = None
+        best_type = "pass"
         best_rank = -1
         max_score = 0
         for f in fired:
@@ -105,13 +108,9 @@ class RiskEngine:
             max_score = max(max_score, score)
             f_type = f.action.get("type", "alert")
             f_rank = ranks.get(f_type, 0)
-            if best_type is None or f_rank >= best_rank:
+            if f_rank > best_rank:
                 best_rank = f_rank
                 best_type = f_type
-        if best_type is None:
-            best_type = "pass"
-        if best_type == "reject":
-            best_type = "review"
         return best_type, max_score
 
     # ------------------------------------------------------------------
@@ -149,9 +148,9 @@ class RiskEngine:
                     all_ok = False
                     break
                 val = self.window.query(str(key), spec.window_sec, spec.agg_type, now=ts)
-                agg_values.append({"key_field": spec.key_field, "value": val,
-                                   "op": spec.op, "threshold": spec.threshold,
-                                   "agg_type": spec.agg_type})
+                agg_values.append({"key_field": spec.key_field, "key_value": str(key),
+                                   "value": val, "op": spec.op, "threshold": spec.threshold,
+                                   "agg_type": spec.agg_type, "window_sec": spec.window_sec})
                 if not spec.evaluate(val):
                     all_ok = False
                     break
@@ -187,7 +186,6 @@ class RiskEngine:
                 })
 
         # 6) 持久化 + 统计
-        self.events.add(event, ts=ts)
         elapsed_us = int((time.perf_counter() - start) * 1e6)
 
         matched = len(fired) > 0
@@ -211,41 +209,57 @@ class RiskEngine:
             m["rejected"] += 1 if action == "reject" else 0
             m["alerted"] += len(alert_results)
 
-        display_action = action
-        if action == "reject":
-            display_action = "review"
-        elif action == "review":
-            display_action = "reject"
-        elif action == "alert":
-            display_action = "pass"
-        else:
-            display_action = "pass"
-        name_map = {r.id: r.description for r in fired}
-        reason_map = {r.id: r.name for r in fired}
-        action_map = {r.id: r.action.get("type", "alert") for r in fired}
-
         def _detail(r):
+            agg_values = fired_agg.get(r.id, [])
+            # alpha 普通条件逐条记录字段实际值与是否满足，供详情回溯
+            alpha_checks = [{"field": cond.get("field"), "op": cond.get("op"),
+                             "value": cond.get("value"),
+                             "actual": _get_field(event, cond.get("field", "")),
+                             "ok": bool(fn(event))}
+                            for cond in r.raw.get("conditions", [])
+                            if isinstance(cond, dict) and "agg" not in cond
+                            for fn in [self._alpha_pred(cond, r.id)]]
             return {
                 "rule_id": r.id,
-                "rule_name": name_map.get(r.id, r.name),
-                "reason": reason_map.get(r.id, r.action.get("reason", r.name)),
+                "rule_name": r.description or r.name,
+                "description": r.name,
+                "reason": r.action.get("reason", r.description or r.name),
+                "level": r.action.get("level"),
                 "risk_score": int(r.action.get("risk_score", 50)),
-                "action": action_map.get(r.id, "alert"),
+                "action": r.action.get("type", "alert"),
                 "priority": r.priority,
-                "agg_values": fired_agg.get(r.id, []),
+                "tags": r.tags,
+                "conditions": r.raw.get("conditions", []),
+                "alpha_checks": alpha_checks,
+                "agg_values": agg_values,
             }
+
+        # 最终处置原因：参与决定最终动作的规则（同优先级）给出的原因
+        final_rule_ids = []
+        if fired:
+            final_rank = self._ACTION_RANK.get(action, 0)
+            final_rule_ids = [r.id for r in fired
+                              if self._ACTION_RANK.get(r.action.get("type", "alert"), 0)
+                              == final_rank]
+        reasons = [r.action.get("reason", r.description or r.name)
+                   for r in fired if r.id in final_rule_ids]
 
         decision = {
             "event_id": event.get("id"),
             "ts": ts,
             "matched": matched,
-            "action": display_action,
+            "action": action,
             "risk_score": max_score,
+            "reason": "；".join(dict.fromkeys(reasons)) if reasons else "",
+            "decisive_rule_ids": final_rule_ids,
             "fired_rules": [_detail(r) for r in fired],
             "alerts": alert_results,
             "elapsed_us": elapsed_us,
             "engine_version": snapshot.version,
         }
+
+        # 事件与决策快照一并持久化，供历史事件深度回溯
+        self.events.add(event, decision=decision, ts=ts)
 
         # 7) 广播给 WebSocket 订阅者
         self._broadcast({
@@ -275,33 +289,59 @@ class RiskEngine:
                     all_ok = False
                     break
                 val = self.window.query(str(key), spec.window_sec, spec.agg_type, now=ts)
-                agg_values.append({"key_field": spec.key_field, "value": val,
-                                   "op": spec.op, "threshold": spec.threshold,
-                                   "agg_type": spec.agg_type})
+                agg_values.append({"key_field": spec.key_field, "key_value": str(key),
+                                   "value": val, "op": spec.op, "threshold": spec.threshold,
+                                   "agg_type": spec.agg_type, "window_sec": spec.window_sec})
                 if not spec.evaluate(val):
                     all_ok = False
                     break
             if all_ok:
                 fired.append(rule)
                 fired_agg[rule.id] = agg_values
-        prio_key = lambda r: r.priority
-        fired.sort(key=prio_key)
+        fired.sort(key=lambda r: (r.priority, r.name))
         action, max_score = self._decide(fired)
 
         def _dry_detail(r):
+            alpha_checks = [{"field": cond.get("field"), "op": cond.get("op"),
+                             "value": cond.get("value"),
+                             "actual": _get_field(event, cond.get("field", "")),
+                             "ok": bool(fn(event))}
+                            for cond in r.raw.get("conditions", [])
+                            if isinstance(cond, dict) and "agg" not in cond
+                            for fn in [self._alpha_pred(cond, r.id)]]
             return {
                 "rule_id": r.id,
-                "rule_name": r.description,
-                "reason": r.name,
+                "rule_name": r.description or r.name,
+                "description": r.name,
+                "reason": r.action.get("reason", r.description or r.name),
+                "level": r.action.get("level"),
                 "risk_score": int(r.action.get("risk_score", 50)),
                 "action": r.action.get("type", "alert"),
+                "priority": r.priority,
+                "tags": r.tags,
+                "conditions": r.raw.get("conditions", []),
+                "alpha_checks": alpha_checks,
                 "agg_values": fired_agg.get(r.id, []),
             }
 
+        final_rule_ids = []
+        if fired:
+            final_rank = self._ACTION_RANK.get(action, 0)
+            final_rule_ids = [r.id for r in fired
+                              if self._ACTION_RANK.get(r.action.get("type", "alert"), 0)
+                              == final_rank]
+        reasons = [r.action.get("reason", r.description or r.name)
+                   for r in fired if r.id in final_rule_ids]
+
         return {
+            "event_id": event.get("id"),
+            "ts": ts,
             "matched": len(fired) > 0,
             "action": action,
             "risk_score": max_score,
+            "reason": "；".join(dict.fromkeys(reasons)) if reasons else "",
+            "decisive_rule_ids": final_rule_ids,
+            "replayed": True,
             "fired_rules": [_dry_detail(r) for r in fired],
             "elapsed_us": int((time.perf_counter() - start) * 1e6),
             "engine_version": snapshot.version,

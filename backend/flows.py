@@ -17,14 +17,27 @@ from backend import config
 from backend.storage import atomic_write_json, read_json
 from backend.engine.rule_parser import compile_condition, compile_condition_cached, RuleValidationError
 
-ACTION_RANK = {"reject": 1, "review": 3, "alert": 2, "pass": 0}
+ACTION_RANK = {"reject": 3, "review": 2, "alert": 1, "pass": 0}
 
 
 def _scale_score(raw):
     try:
-        return int(raw) // 10
+        return max(0, min(100, int(raw)))
     except (TypeError, ValueError):
         return 0
+
+
+def _field_value(event, field):
+    """按点路径取事件字段值（与规则条件一致）。"""
+    if not field:
+        return None
+    cur = event
+    for part in str(field).split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
 
 
 class FlowValidationError(ValueError):
@@ -69,14 +82,40 @@ class CompiledFlow:
         return fn
 
     def execute(self, event):
-        """执行决策流，返回 {actions, path, decision, risk_score}。"""
+        """执行决策流，返回 {actions, path, steps, decision, risk_score}。
+
+        - path: 实际经过的节点 id 顺序（深度优先）；
+        - steps: 每个经过节点的可解释轨迹（条件求值结果 / 分支走向 / 动作）；
+        - actions: 所有可达动作节点的数据；
+        - decision/risk_score：由可达动作按优先级汇总。
+        """
         start = next((n["id"] for n in self.nodes.values()
                       if n.get("type") == "start"), None)
         actions = []
         path = []
+        steps = []
         visited = set()
 
-        def walk(node_id):
+        def add_step(node, **extra):
+            data = node.get("data", {}) or {}
+            step = {
+                "node_id": node["id"],
+                "type": node.get("type"),
+                "label": node.get("label") or node.get("id"),
+            }
+            if node.get("type") == "condition":
+                step["field"] = data.get("field")
+                step["op"] = data.get("op")
+                step["compare_value"] = data.get("value")
+                step["actual_value"] = _field_value(event, data.get("field"))
+            if node.get("type") == "action":
+                step["action"] = data.get("action", "pass")
+                step["risk_score"] = data.get("risk_score", 0)
+                step["reason"] = data.get("reason", "")
+            step.update(extra)
+            steps.append(step)
+
+        def walk(node_id, via_label=""):
             if node_id in visited:
                 return
             visited.add(node_id)
@@ -86,29 +125,33 @@ class CompiledFlow:
             path.append(node_id)
             ntype = node.get("type")
             if ntype == "action":
-                actions.append(node.get("data", {}))
+                data = node.get("data", {}) or {}
+                actions.append(data)
+                add_step(node, via=via_label)
             elif ntype == "condition":
                 fn = self._predicate(node_id)
                 truth = bool(fn(event))
+                add_step(node, via=via_label, result=truth,
+                         branch="true" if truth else "false")
                 for to, label in self.adj.get(node_id, []):
                     if label == "true" and truth:
-                        walk(to)
+                        walk(to, "true")
                     elif label == "false" and not truth:
-                        walk(to)
+                        walk(to, "false")
                     elif label not in ("true", "false"):
-                        walk(to)
+                        walk(to, label or via_label)
             elif ntype in ("start", "branch"):
+                add_step(node, via=via_label)
                 # start/branch：沿所有出边展开
-                for to, _label in self.adj.get(node_id, []):
-                    walk(to)
+                for to, label in self.adj.get(node_id, []):
+                    walk(to, label or via_label)
 
         walk(start)
 
         action = "pass"
         max_score = 0
         for a in actions:
-            raw_score = a.get("risk_score", 0)
-            scaled = _scale_score(raw_score)
+            scaled = _scale_score(a.get("risk_score", 0))
             if scaled > max_score:
                 max_score = scaled
             atype = a.get("action", "pass")
@@ -116,8 +159,6 @@ class CompiledFlow:
                 atype = "pass"
             if ACTION_RANK.get(atype, 0) >= ACTION_RANK.get(action, 0):
                 action = atype
-        if action == "reject":
-            action = "review"
         return {
             "flow_id": self.id,
             "flow_name": self.name,
@@ -125,6 +166,7 @@ class CompiledFlow:
             "risk_score": max_score,
             "actions": actions,
             "path": path,
+            "steps": steps,
         }
 
 

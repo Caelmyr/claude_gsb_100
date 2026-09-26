@@ -77,7 +77,6 @@ def create_app():
             except Exception:
                 pass
         engine.add_listener(send)
-        engine.add_listener(send)
         # 连接后先推送一条快照（当前统计）
         try:
             send({"kind": "hello", "engine": engine.stats()})
